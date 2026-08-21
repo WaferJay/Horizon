@@ -1,0 +1,62 @@
+{
+  "id": "international-news",
+  "name": "International News",
+  "display_names": {
+    "zh": "国际新闻"
+  },
+  "match": "match.md",
+  "analysis": "analysis.md",
+  "content": {
+    "analysis_max_chars": 8000,
+    "enrichment_max_chars": 16000,
+    "sampling": "head-middle-tail"
+  },
+  "enrichment": {
+    "prompt": "enrichment.md",
+    "blocks": [
+      {
+        "id": "summary",
+        "type": "section",
+        "tools": [],
+        "primary": true
+      },
+      {
+        "id": "background",
+        "type": "section",
+        "tools": ["web_search"]
+      },
+      {
+        "id": "key_actors",
+        "type": "section",
+        "tools": []
+      },
+      {
+        "id": "domestic_context",
+        "type": "section",
+        "tools": []
+      },
+      {
+        "id": "timeline",
+        "type": "section",
+        "tools": [],
+        "optional": true
+      },
+      {
+        "id": "international_impact",
+        "type": "section",
+        "tools": ["web_search"]
+      },
+      {
+        "id": "uncertainty",
+        "type": "section",
+        "tools": []
+      },
+      {
+        "id": "community_discussion",
+        "type": "section",
+        "tools": [],
+        "optional": true
+      }
+    ]
+  }
+}
