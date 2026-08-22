@@ -341,9 +341,18 @@ docker compose run --rm horizon [OPTIONS]
 | `--hours N` | 24 | Fetch from last N hours |
 | `-d`, `--data-dir PATH` | `data` | Path to the data directory |
 | `-c`, `--config PATH` | `<data-dir>/config.json` | Path to config file |
+| `--debug-dir PATH` | disabled | Persist per-run diagnostics under PATH |
 | `-l`, `--log-level LEVEL` | `WARNING` | Logging level (DEBUG/INFO/WARNING/ERROR/CRITICAL) |
 
 `--data-dir` changes the state directory, including summaries, subscribers, and the default config location; `--config` changes only the config file. The generated report is saved to `data/summaries/` (or `<data-dir>/summaries/` if `--data-dir` is set). See [Configuration Paths](docs/configuration.md#configuration-paths) for combining both flags and initializing a custom config location.
+
+For a reproducible run investigation, enable persistent diagnostics explicitly:
+
+```bash
+uv run horizon --config data/config.github.json --debug-dir data/debug
+```
+
+Each run gets its own directory containing stage snapshots, actual HTTP response bodies, AI prompts/responses, tool calls, extractor output, and generated summaries. Credential-like config, metadata, prompt, URL-query, and header fields are redacted; raw response bodies are retained for diagnosis. Debug write failures do not stop the aggregation pipeline. Article pages are only fetched when a configured RSS `content_extractor` actually requests them.
 
 ### 4. Automate (Optional)
 

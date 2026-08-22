@@ -31,6 +31,16 @@ mkdir -p /etc/horizon
 cp data/config.example.json /etc/horizon/config.json
 ```
 
+## Debug Artifacts
+
+Use `--debug-dir` when diagnosing fetching, analysis, enrichment, or localization behavior:
+
+```bash
+uv run horizon --config data/config.github.json --debug-dir data/debug
+```
+
+The command creates a timestamped run directory containing raw stage snapshots, actual HTTP response bodies, AI prompts and responses, tool results, extractor text, and generated summaries. Credential-like config, metadata, prompt, URL-query, and header fields are redacted; raw response bodies are retained for diagnosis. The option is disabled by default, debug writes are best-effort, and no article page is fetched solely for debugging.
+
 ## Interactive Wizard
 
 `horizon-wizard` asks about your interests and generates `data/config.json` from matched presets and, optionally, AI recommendations:

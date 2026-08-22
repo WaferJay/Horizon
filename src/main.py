@@ -9,8 +9,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 from rich.console import Console
 
-from ._cli import add_data_dir_arguments, add_log_level_argument
+from ._cli import (
+    add_data_dir_arguments,
+    add_debug_dir_argument,
+    add_log_level_argument,
+)
 from .console_icons import get_icons
+from .debug import DebugStore
 from .logging_config import configure_logging
 from .storage.manager import ConfigError, StorageManager
 from .orchestrator import HorizonOrchestrator
@@ -44,6 +49,7 @@ def main():
     parser = argparse.ArgumentParser(description="Horizon - AI-Driven Information Aggregation System")
     parser.add_argument("--hours", type=int, help="Force fetch from last N hours")
     add_data_dir_arguments(parser)
+    add_debug_dir_argument(parser)
     add_log_level_argument(parser)
     args = parser.parse_args()
 
@@ -100,8 +106,25 @@ def main():
 
         icons = get_icons(config.display.icon_style)
 
+        debug_store = None
+        if args.debug_dir:
+            debug_store = DebugStore(
+                args.debug_dir,
+                config=config,
+                metadata={
+                    "config_path": str(storage.config_path),
+                    "data_dir": str(data_dir),
+                    "force_hours": args.hours,
+                },
+            )
+
         # Create and run orchestrator
-        orchestrator = HorizonOrchestrator(config, storage, console=console)
+        orchestrator = HorizonOrchestrator(
+            config,
+            storage,
+            console=console,
+            debug_store=debug_store,
+        )
         asyncio.run(orchestrator.run(force_hours=args.hours))
 
     except KeyboardInterrupt:

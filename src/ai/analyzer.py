@@ -15,6 +15,7 @@ from .classifier import ContentClassifier
 from .prompting.analysis import analysis_system_prompt, analysis_user_prompt
 from .utils import parse_json_response
 from ..models import ContentAnalysis, ContentItem
+from ..debug.context import debug_scope
 from ..processing.content import select_content, split_content
 from ..processing.profiles import ProfileRegistry
 
@@ -61,16 +62,22 @@ class ContentAnalyzer:
 
         async def _process(item: ContentItem, index: int, progress_task) -> ContentItem:
             async with semaphore:
-                try:
-                    await self._analyze_item(item)
-                except Exception as e:
-                    logger.error("Error analyzing item %s: %s", item.id, e)
-                    if item.processing:
-                        item.processing.analysis = ContentAnalysis(
-                            score=None,
-                            reason="Analysis failed",
-                            summary=item.title,
-                        )
+                with debug_scope(
+                    stage="analysis",
+                    item_id=item.id,
+                    operation="analyze",
+                    attempt=1,
+                ):
+                    try:
+                        await self._analyze_item(item)
+                    except Exception as e:
+                        logger.error("Error analyzing item %s: %s", item.id, e)
+                        if item.processing:
+                            item.processing.analysis = ContentAnalysis(
+                                score=None,
+                                reason="Analysis failed",
+                                summary=item.title,
+                            )
                 if throttle_sec > 0 and index < len(items) - 1:
                     await asyncio.sleep(throttle_sec)
             progress.advance(progress_task)
@@ -159,15 +166,16 @@ class ContentAnalyzer:
 
         result, failure = self._validate_analysis_response(response)
         if result is None:
-            repair_response = await self.client.complete(
-                system=analysis_system_prompt(profile),
-                user=(
-                    user_prompt
-                    + "\n\nYour previous response did not satisfy the output contract "
-                    f"({failure}). Analyze the item again and return only the required JSON object."
-                ),
-                temperature=0,
-            )
+            with debug_scope(operation="repair", attempt=2):
+                repair_response = await self.client.complete(
+                    system=analysis_system_prompt(profile),
+                    user=(
+                        user_prompt
+                        + "\n\nYour previous response did not satisfy the output contract "
+                        f"({failure}). Analyze the item again and return only the required JSON object."
+                    ),
+                    temperature=0,
+                )
             result, failure = self._validate_analysis_response(repair_response)
 
         if result is None:

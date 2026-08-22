@@ -11,6 +11,15 @@ import httpx
 from rich.console import Console
 
 from .console_icons import get_icons
+from .debug import (
+    DebugStore,
+    RecordingAIClient,
+    RecordingAsyncClient,
+    RecordingExtractorRegistry,
+    RecordingToolRegistry,
+    debug_scope,
+    make_http_event_hooks,
+)
 from .models import Config, ContentItem
 from .storage.manager import StorageManager, safe_output_path
 from .services.email import EmailManager
@@ -26,12 +35,13 @@ from .scrapers.openbb import OpenBBScraper
 from .scrapers.ossinsight import OSSInsightScraper
 from .scrapers.gdelt import GDELTScraper
 from .scrapers.google_news import GoogleNewsScraper
-from .ai.client import create_ai_client
+from .ai.client import AIClient, create_ai_client
 from .ai.analyzer import ContentAnalyzer
 from .ai.summarizer import DailySummarizer
 from .ai.enricher import ContentEnricher, EnrichmentBatchResult
 from .ai.tokens import get_usage_snapshot
 from .processing import ProfileRegistry
+from .processing.tools import ToolRegistry
 
 
 _TRACKING_QUERY_PARAMETERS = {
@@ -176,6 +186,7 @@ class HorizonOrchestrator:
         storage: StorageManager,
         console: Optional[Console] = None,
         profiles: Optional[ProfileRegistry] = None,
+        debug_store: Optional[DebugStore] = None,
     ):
         """Initialize orchestrator.
 
@@ -183,10 +194,13 @@ class HorizonOrchestrator:
             config: Application configuration
             storage: Storage manager
             console: Shared Rich Console instance
+            profiles: Optional profile registry override
+            debug_store: Optional persistent debug observer store
         """
         self.config = config
         self.storage = storage
         self.console = console or Console(stderr=True)
+        self.debug_store = debug_store
         self.icons = get_icons(config.display.icon_style)
         self.profiles = profiles or ProfileRegistry.load(
             Path(config.processing.profiles_dir), config.processing.default_profile
@@ -240,6 +254,14 @@ class HorizonOrchestrator:
         try:
             # 1. Determine time window
             since = self._determine_time_window(force_hours)
+            self._record_debug_event(
+                "time_window",
+                {
+                    "since": since.isoformat(),
+                    "force_hours": force_hours,
+                    "configured_hours": self.config.collection.time_window_hours,
+                },
+            )
             self.console.print(
                 f"{self.icons['date']} Fetching content since: "
                 f"{since.strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -250,12 +272,22 @@ class HorizonOrchestrator:
             self.console.print(
                 f"{self.icons['fetched']} Fetched {len(all_items)} items from all sources\n"
             )
+            self._save_debug_stage(
+                "raw",
+                all_items,
+                metadata={
+                    "fetch_report": self.last_fetch_report.to_dict()
+                    if self.last_fetch_report
+                    else None
+                },
+            )
 
             if self.last_fetch_report and self.last_fetch_report.all_failed:
                 raise RuntimeError(self.last_fetch_report.failure_message())
 
             if not all_items:
                 self.console.print("[yellow]No new content found. Exiting.[/yellow]")
+                self._finish_debug("empty")
                 return
 
             # 3. Merge cross-source duplicates (same URL from different sources)
@@ -266,11 +298,21 @@ class HorizonOrchestrator:
                     f"{len(all_items) - len(merged_items)} cross-source duplicates "
                     f"→ {len(merged_items)} unique items\n"
                 )
+            self._save_debug_stage(
+                "merged",
+                merged_items,
+                metadata={"input_count": len(all_items)},
+            )
 
             # 4. Analyze with AI
             analyzed_items = await self.analyze_items(merged_items)
             self.console.print(
                 f"{self.icons['ai']} Analyzed {len(analyzed_items)} items with AI\n"
+            )
+            self._save_debug_stage(
+                "scored",
+                analyzed_items,
+                metadata={"input_count": len(merged_items)},
             )
 
             # 5. Filter, deduplicate, and balance the digest
@@ -278,6 +320,24 @@ class HorizonOrchestrator:
                 analyzed_items,
             )
             important_items = filtering_result.items
+            self._save_debug_stage(
+                "filtered",
+                important_items,
+                metadata={
+                    "threshold_count": filtering_result.threshold_count,
+                    "topic_dedup_count": filtering_result.topic_dedup_count,
+                    "topic_dedup_removed": filtering_result.topic_dedup_removed,
+                    "eligible_count": filtering_result.eligible_count,
+                    "balanced_digest": {
+                        "enabled": filtering_result.balanced_digest.enabled,
+                        "group_counts": filtering_result.balanced_digest.group_counts,
+                        "group_limits": filtering_result.balanced_digest.group_limits,
+                        "duplicate_categories": (
+                            filtering_result.balanced_digest.duplicate_categories
+                        ),
+                    },
+                },
+            )
 
             # Show per-sub-source selection breakdown
             selected_counts: Dict[str, int] = defaultdict(int)
@@ -289,7 +349,21 @@ class HorizonOrchestrator:
             self.console.print("")
 
             # 6. Search related stories + enrich with background knowledge (2nd AI pass)
-            await self.enrich_items(important_items)
+            enrichment_result = await self.enrich_items(important_items)
+            enrichment_metadata = (
+                {"status": "not_recorded"}
+                if enrichment_result is None
+                else {
+                    "status": enrichment_result.status,
+                    "succeeded_ids": enrichment_result.succeeded_ids,
+                    "failures": enrichment_result.failures,
+                }
+            )
+            self._save_debug_stage(
+                "enriched",
+                important_items,
+                metadata=enrichment_metadata,
+            )
 
             # 7. Generate and save daily summaries for each configured language
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -299,6 +373,7 @@ class HorizonOrchestrator:
                     profile_order=self.config.digest.profile_order,
                 )
                 summary = await summarizer.generate_summary(important_items, today, len(all_items), language=lang)
+                self._save_debug_summary(lang, summary)
 
                 # Save to data/summaries/
                 summary_path = self.storage.save_daily_summary(today, summary, language=lang)
@@ -385,11 +460,13 @@ class HorizonOrchestrator:
                         f"   {self.icons['detail']} {provider}: {u.total} tokens "
                         f"(in: {u.input_tokens}, out: {u.output_tokens})"
                     )
+            self._finish_debug("success")
 
         except Exception as e:
             self.console.print(
                 f"[bold red]{self.icons['error']} Error: {e}[/bold red]"
             )
+            self._finish_debug("failure", e)
 
             # Send webhook failure notification if configured
             if self.webhook_notifier:
@@ -399,6 +476,46 @@ class HorizonOrchestrator:
                 )
 
             raise
+
+    def _debug_enabled(self) -> bool:
+        # A few lightweight integrations construct the orchestrator through
+        # ``object.__new__`` and only populate the fields needed for their
+        # test.  Debugging is optional, so a missing attribute must behave the
+        # same as an explicitly disabled store.
+        debug_store = getattr(self, "debug_store", None)
+        return bool(debug_store and debug_store.enabled)
+
+    def _record_debug_event(
+        self, event_type: str, payload: Optional[Dict[str, object]] = None
+    ) -> None:
+        if self._debug_enabled():
+            self.debug_store.record_event(event_type, payload)
+
+    def _save_debug_stage(
+        self,
+        stage: str,
+        items: List[ContentItem],
+        *,
+        metadata: Optional[Dict[str, object]] = None,
+    ) -> None:
+        if self._debug_enabled():
+            self.debug_store.save_stage(stage, items, metadata=metadata)
+
+    def _save_debug_summary(self, language: str, summary: str) -> None:
+        if self._debug_enabled():
+            self.debug_store.save_summary(language, summary)
+
+    def _finish_debug(
+        self, status: str, error: Optional[BaseException] = None
+    ) -> None:
+        if self._debug_enabled():
+            self.debug_store.finish(status, error)
+
+    def _create_ai_client(self) -> AIClient:
+        client = create_ai_client(self.config.ai)
+        if self._debug_enabled():
+            return RecordingAIClient(client, self.debug_store)
+        return client
 
     def _determine_time_window(self, force_hours: int = None) -> datetime:
         if force_hours:
@@ -420,7 +537,16 @@ class HorizonOrchestrator:
             List[ContentItem]: All fetched items
         """
         self.last_fetch_report = None
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        client_options: Dict[str, object] = {"timeout": 30.0}
+        if self._debug_enabled():
+            client_options["event_hooks"] = make_http_event_hooks(
+                self.debug_store, stage="fetch"
+            )
+        if self._debug_enabled():
+            client_context = RecordingAsyncClient(self.debug_store, **client_options)
+        else:
+            client_context = httpx.AsyncClient(**client_options)
+        async with client_context as client:
             tasks = []
 
             # GitHub sources
@@ -436,10 +562,15 @@ class HorizonOrchestrator:
             # RSS feeds
             if self.config.sources.rss:
                 from .extractors import ExtractorRegistry
+                extractor_registry = ExtractorRegistry(self.config.extractors)
+                if self._debug_enabled():
+                    extractor_registry = RecordingExtractorRegistry(
+                        extractor_registry, self.debug_store
+                    )
                 rss_scraper = RSSScraper(
                     self.config.sources.rss,
                     client,
-                    ExtractorRegistry(self.config.extractors),
+                    extractor_registry,
                 )
                 tasks.append(self._fetch_with_progress("RSS Feeds", rss_scraper, since))
 
@@ -508,7 +639,8 @@ class HorizonOrchestrator:
         """
         self.console.print(f"{self.icons['fetch']} Fetching from {name}...")
         try:
-            items = await scraper.fetch(since)
+            with debug_scope(stage="fetch", operation=f"source:{name}"):
+                items = await scraper.fetch(since)
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
             self.console.print(f"[red]   Failed to fetch {name}: {error}[/red]")
@@ -646,11 +778,12 @@ class HorizonOrchestrator:
         items_text = "\n\n".join(lines)
 
         try:
-            ai_client = create_ai_client(self.config.ai)
-            response = await ai_client.complete(
-                system=TOPIC_DEDUP_SYSTEM,
-                user=TOPIC_DEDUP_USER.format(items=items_text),
-            )
+            ai_client = self._create_ai_client()
+            with debug_scope(stage="topic_dedup", operation="deduplicate"):
+                response = await ai_client.complete(
+                    system=TOPIC_DEDUP_SYSTEM,
+                    user=TOPIC_DEDUP_USER.format(items=items_text),
+                )
             result = parse_json_response(response)
             if result is None:
                 if log:
@@ -977,7 +1110,16 @@ class HorizonOrchestrator:
             f"{len(twitter_items)} Twitter items..."
         )
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        client_options: Dict[str, object] = {"timeout": 30.0}
+        if self._debug_enabled():
+            client_options["event_hooks"] = make_http_event_hooks(
+                self.debug_store, stage="twitter_discussion"
+            )
+        if self._debug_enabled():
+            client_context = RecordingAsyncClient(self.debug_store, **client_options)
+        else:
+            client_context = httpx.AsyncClient(**client_options)
+        async with client_context as client:
             if tw_cfg.mode == "playwright":
                 self.console.print(
                     "   [yellow]Reply expansion not yet supported in Playwright mode.[/yellow]"
@@ -1006,7 +1148,7 @@ class HorizonOrchestrator:
         self.console.print(
             f"   Re-analyzing {len(expanded)} Twitter items with reply context...\n"
         )
-        ai_client = create_ai_client(self.config.ai)
+        ai_client = self._create_ai_client()
         analyzer = ContentAnalyzer(ai_client, self.profiles, console=self.console)
         await analyzer.analyze_batch(expanded)
 
@@ -1025,12 +1167,16 @@ class HorizonOrchestrator:
         self.console.print(
             f"{self.icons['enrich']} Enriching with background knowledge..."
         )
-        ai_client = create_ai_client(self.config.ai)
+        ai_client = self._create_ai_client()
+        tools = ToolRegistry()
+        if self._debug_enabled():
+            tools = RecordingToolRegistry(tools, self.debug_store)
         enricher = ContentEnricher(
             ai_client,
             self.profiles,
             self.config.ai.languages,
             console=self.console,
+            tools=tools,
         )
         result = await enricher.enrich_batch(items)
         self.console.print(
@@ -1055,7 +1201,7 @@ class HorizonOrchestrator:
         """
         self.console.print(f"{self.icons['ai']} Analyzing content with AI...")
 
-        ai_client = create_ai_client(self.config.ai)
+        ai_client = self._create_ai_client()
         analyzer = ContentAnalyzer(ai_client, self.profiles, console=self.console)
 
         return await analyzer.analyze_batch(items)

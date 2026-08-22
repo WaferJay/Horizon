@@ -30,6 +30,7 @@ from .prompting.enrichment import (
 )
 from .utils import parse_json_response
 from ..models import ArtifactSource, ContentArtifact, ContentBlock, ContentItem
+from ..debug.context import debug_scope
 from ..processing.profiles import LoadedProfile, ProfileBlock, ProfileRegistry
 from ..processing.tools import ToolRegistry, ToolResult
 
@@ -163,7 +164,8 @@ class ContentEnricher:
                 "user": user,
                 "temperature": 0,
             }
-            response = await self._complete(**request)
+            with debug_scope(attempt=attempt + 1):
+                response = await self._complete(**request)
             parsed = parse_json_response(response)
             try:
                 result = model.model_validate(parsed)
@@ -185,13 +187,18 @@ class ContentEnricher:
             item: ContentItem, task_id: TaskID
         ) -> tuple[str, Optional[Exception]]:
             async with semaphore:
-                try:
-                    await self._enrich_item(item)
-                except Exception as exc:
-                    logger.error("Error enriching item %s: %s", item.id, exc)
-                    return item.id, exc
-                finally:
-                    progress.advance(task_id)
+                with debug_scope(
+                    stage="enrichment",
+                    item_id=item.id,
+                    operation="item",
+                ):
+                    try:
+                        await self._enrich_item(item)
+                    except Exception as exc:
+                        logger.error("Error enriching item %s: %s", item.id, exc)
+                        return item.id, exc
+                    finally:
+                        progress.advance(task_id)
             return item.id, None
 
         with Progress(
@@ -225,9 +232,10 @@ class ContentEnricher:
 
         artifacts = {}
         for language in self.languages:
-            generated = await self._generate_artifact(
-                item, profile, language, tool_results
-            )
+            with debug_scope(language=language, operation="artifact"):
+                generated = await self._generate_artifact(
+                    item, profile, language, tool_results
+                )
             self._expand_request_source_refs(generated.blocks, tool_results)
             self._validate_blocks(generated.blocks, profile, tool_results)
             generated.title = normalize_language(generated.title, language)
@@ -278,12 +286,13 @@ class ContentEnricher:
         if not any(allowed.values()):
             return []
 
-        plan = await self._complete_model(
-            ToolPlan,
-            system=tool_planning_prompt(profile.definition.enrichment.blocks),
-            user=item_context(item, profile, include_content=True),
-            error_message="Invalid enrichment tool plan",
-        )
+        with debug_scope(operation="tool_plan", block_id="tool_plan"):
+            plan = await self._complete_model(
+                ToolPlan,
+                system=tool_planning_prompt(profile.definition.enrichment.blocks),
+                user=item_context(item, profile, include_content=True),
+                error_message="Invalid enrichment tool plan",
+            )
 
         results = []
         seen = set()
@@ -344,16 +353,17 @@ class ContentEnricher:
                         "missing required blocks: " + ", ".join(sorted(missing))
                     )
 
-            generated = await self._complete_model(
-                GeneratedArtifact,
-                system=artifact_prompt(profile, language, base_blocks),
-                user=(
-                    item_context(item, profile, include_content=True)
-                    + "\n\n# Tool results\n\nNo tool results are available to these blocks."
-                ),
-                error_message="Invalid enrichment artifact",
-                validator=validate_required_blocks,
-            )
+            with debug_scope(operation="artifact_base", block_id="artifact"):
+                generated = await self._complete_model(
+                    GeneratedArtifact,
+                    system=artifact_prompt(profile, language, base_blocks),
+                    user=(
+                        item_context(item, profile, include_content=True)
+                        + "\n\n# Tool results\n\nNo tool results are available to these blocks."
+                    ),
+                    error_message="Invalid enrichment artifact",
+                    validator=validate_required_blocks,
+                )
             title = generated.title.strip()
             allowed_ids = {block.id for block in base_blocks}
             configured_ids = {block.id for block in configured_blocks}
@@ -397,22 +407,23 @@ class ContentEnricher:
                         f"block ID {generated.block.id} does not match {block.id}"
                     )
 
-            generated = await self._complete_model(
-                response_model,
-                system=block_prompt(
-                    profile,
-                    language,
-                    block,
-                    include_header=not title,
-                ),
-                user=(
-                    item_context(item, profile, include_content=True)
-                    + f"\n\n# Tool results for block `{block.id}`\n\n"
-                    + tool_results_text(block_results)
-                ),
-                error_message=f"Invalid enrichment block: {block.id}",
-                validator=validate_requested_block,
-            )
+            with debug_scope(operation="artifact_block", block_id=block.id):
+                generated = await self._complete_model(
+                    response_model,
+                    system=block_prompt(
+                        profile,
+                        language,
+                        block,
+                        include_header=not title,
+                    ),
+                    user=(
+                        item_context(item, profile, include_content=True)
+                        + f"\n\n# Tool results for block `{block.id}`\n\n"
+                        + tool_results_text(block_results)
+                    ),
+                    error_message=f"Invalid enrichment block: {block.id}",
+                    validator=validate_requested_block,
+                )
 
             if not title:
                 title = generated.title.strip()

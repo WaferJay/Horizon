@@ -29,3 +29,13 @@ def add_data_dir_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="PATH",
         help="Path to config file (default: <data-dir>/config.json)",
     )
+
+
+def add_debug_dir_argument(parser: argparse.ArgumentParser) -> None:
+    """Add the opt-in root directory for persistent run diagnostics."""
+    parser.add_argument(
+        "--debug-dir",
+        default=None,
+        metavar="PATH",
+        help="Persist per-run debug artifacts under PATH (disabled by default)",
+    )
