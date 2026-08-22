@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.ai.enricher import ContentEnricher
+from src.ai.enricher import ContentEnricher, ToolPlan
 from src.models import (
     ClassificationResult,
     ContentAnalysis,
@@ -257,6 +257,72 @@ def test_enrichment_repairs_malformed_tool_plan_once():
     assert all(request["temperature"] == 0 for request in requests)
     assert requests[1]["temperature"] == 0
     assert item.processing.artifacts["en"].blocks[0].id == "summary"
+
+
+def test_enrichment_json_repair_includes_error_and_previous_response():
+    responses = iter(
+        [
+            "not JSON at all",
+            "still not JSON",
+            json.dumps({"tool_requests": []}),
+        ]
+    )
+    requests = []
+
+    async def complete(**kwargs):
+        requests.append(kwargs)
+        return next(responses)
+
+    enricher = ContentEnricher(
+        SimpleNamespace(complete=complete),
+        PROFILES,
+        ["en"],
+        tools=FakeTools(),
+    )
+
+    result = asyncio.run(
+        enricher._complete_model(
+            ToolPlan,
+            system="Return a tool plan as JSON.",
+            user="Analyze this item.",
+            error_message="Invalid tool plan",
+        )
+    )
+
+    assert result.tool_requests == []
+    assert len(requests) == 3
+    assert "could not parse a valid JSON response" in requests[1]["user"]
+    assert "not JSON at all" in requests[1]["user"]
+    assert "still not JSON" in requests[2]["user"]
+    assert "not JSON at all" not in requests[2]["user"]
+
+
+def test_enrichment_json_repair_stops_after_three_attempts():
+    responses = iter(["invalid 1", "invalid 2", "invalid 3", "invalid 4"])
+    requests = []
+
+    async def complete(**kwargs):
+        requests.append(kwargs)
+        return next(responses)
+
+    enricher = ContentEnricher(
+        SimpleNamespace(complete=complete),
+        PROFILES,
+        ["en"],
+        tools=FakeTools(),
+    )
+
+    with pytest.raises(ValueError, match="Invalid tool plan"):
+        asyncio.run(
+            enricher._complete_model(
+                ToolPlan,
+                system="Return a tool plan as JSON.",
+                user="Analyze this item.",
+                error_message="Invalid tool plan",
+            )
+        )
+
+    assert len(requests) == 3
 
 
 def test_enrichment_repairs_empty_blog_block_once():
@@ -514,7 +580,10 @@ def test_enrichment_batch_reports_failure_without_discarding_successes():
         tools=FakeTools(),
     )
 
+    calls = []
+
     async def enrich_item(item):  # type: ignore[no-untyped-def]
+        calls.append(item.id)
         if item.id == failed_item.id:
             raise RuntimeError("AI unavailable")
 
@@ -526,3 +595,30 @@ def test_enrichment_batch_reports_failure_without_discarding_successes():
     assert result.succeeded_ids == [successful_item.id]
     assert result.failed_ids == [failed_item.id]
     assert result.failures[failed_item.id] == "RuntimeError: AI unavailable"
+    assert calls.count(successful_item.id) == 1
+    assert calls.count(failed_item.id) == 2
+
+
+def test_enrichment_batch_retries_item_until_it_succeeds():
+    item = make_item()
+    calls = 0
+
+    enricher = ContentEnricher(
+        SimpleNamespace(complete=lambda **kwargs: None),
+        PROFILES,
+        ["en"],
+        tools=FakeTools(),
+    )
+
+    async def enrich_item(_item):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("temporary failure")
+
+    enricher._enrich_item = enrich_item  # type: ignore[method-assign]
+
+    result = asyncio.run(enricher.enrich_batch([item]))
+
+    assert result.status == "success"
+    assert calls == 2
