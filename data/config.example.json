@@ -5,6 +5,9 @@
     "api_key_env": "OPENAI_API_KEY",
     "temperature": 0.3,
     "max_tokens": 4096,
+    "connect_timeout_sec": 10,
+    "read_timeout_sec": 300,
+    "write_timeout_sec": 60,
     "throttle_sec": 0,
     "analysis_concurrency": 1,
     "enrichment_concurrency": 1

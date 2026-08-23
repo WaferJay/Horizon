@@ -145,7 +145,10 @@ def print_config_template():
     "model": "claude-sonnet-4.5-20250929",
     "api_key_env": "ANTHROPIC_API_KEY",
     "temperature": 0.3,
-    "max_tokens": 4096
+    "max_tokens": 4096,
+    "connect_timeout_sec": 10,
+    "read_timeout_sec": 300,
+    "write_timeout_sec": 60
   },
   "display": {
     "icon_style": "emoji"

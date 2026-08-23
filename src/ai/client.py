@@ -4,6 +4,7 @@ import os
 import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
+import httpx
 from openai import AsyncAzureOpenAI, AsyncOpenAI
 from anthropic import AsyncAnthropic
 from google import genai
@@ -89,6 +90,49 @@ def _normalize_ollama_base_url(base_url: str) -> str:
     return f"{normalized}/v1"
 
 
+def _build_http_timeout(config: AIConfig) -> Optional[httpx.Timeout]:
+    """Build an HTTPX timeout with optional per-phase overrides.
+
+    OpenAI and Anthropic both use a 10-minute default timeout with a 5-second
+    connect timeout. Preserve those defaults for fields that are not
+    configured when a partial timeout override is supplied.
+    """
+    if not any(
+        value is not None
+        for value in (
+            config.connect_timeout_sec,
+            config.read_timeout_sec,
+            config.write_timeout_sec,
+        )
+    ):
+        return None
+
+    return httpx.Timeout(
+        timeout=600.0,
+        connect=(
+            config.connect_timeout_sec
+            if config.connect_timeout_sec is not None
+            else 5.0
+        ),
+        read=(
+            config.read_timeout_sec
+            if config.read_timeout_sec is not None
+            else 600.0
+        ),
+        write=(
+            config.write_timeout_sec
+            if config.write_timeout_sec is not None
+            else 600.0
+        ),
+        pool=600.0,
+    )
+
+
+def _seconds_to_milliseconds(seconds: float) -> int:
+    """Convert a positive seconds value to Gemini's integer milliseconds."""
+    return max(1, int(round(seconds * 1000)))
+
+
 class AIClient(ABC):
     """Abstract base class for AI clients."""
 
@@ -130,6 +174,9 @@ class AnthropicClient(AIClient):
         kwargs = {"api_key": api_key}
         if config.base_url:
             kwargs["base_url"] = config.base_url
+        timeout = _build_http_timeout(config)
+        if timeout is not None:
+            kwargs["timeout"] = timeout
 
         self.client = AsyncAnthropic(**kwargs)
         self.model = config.model
@@ -210,6 +257,9 @@ class OpenAIClient(AIClient):
         base_url = self._resolve_base_url(config)
         if base_url:
             kwargs["base_url"] = base_url
+        timeout = _build_http_timeout(config)
+        if timeout is not None:
+            kwargs["timeout"] = timeout
 
         self.client = AsyncOpenAI(**kwargs)
         self.model = config.model
@@ -375,11 +425,15 @@ class AzureOpenAIClient(AIClient):
         if not config.api_version:
             raise ValueError("api_version is required for azure provider")
 
-        self.client = AsyncAzureOpenAI(
-            api_key=api_key,
-            azure_endpoint=azure_endpoint,
-            api_version=config.api_version,
-        )
+        kwargs = {
+            "api_key": api_key,
+            "azure_endpoint": azure_endpoint,
+            "api_version": config.api_version,
+        }
+        timeout = _build_http_timeout(config)
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        self.client = AsyncAzureOpenAI(**kwargs)
         self.model = config.model
         self.temperature = config.temperature
         self.max_tokens = config.max_tokens
@@ -488,7 +542,24 @@ class GeminiClient(AIClient):
 
         api_key = _resolve_api_key(config)
 
-        self.client = genai.Client(api_key=api_key)
+        if config.connect_timeout_sec is not None:
+            logger.warning(
+                "Gemini provider ignores ai.connect_timeout_sec; "
+                "use ai.read_timeout_sec for Gemini requests."
+            )
+        if config.write_timeout_sec is not None:
+            logger.warning(
+                "Gemini provider ignores ai.write_timeout_sec; "
+                "use ai.read_timeout_sec for Gemini requests."
+            )
+
+        client_kwargs = {}
+        if config.read_timeout_sec is not None:
+            client_kwargs["http_options"] = types.HttpOptions(
+                timeout=_seconds_to_milliseconds(config.read_timeout_sec)
+            )
+
+        self.client = genai.Client(api_key=api_key, **client_kwargs)
         self.model = config.model
         self.temperature = config.temperature
         self.max_tokens = config.max_tokens
@@ -660,6 +731,9 @@ def _create_chained_client(config: AIConfig) -> ChainedAIClient:
             throttle_sec=config.throttle_sec,
             analysis_concurrency=config.analysis_concurrency,
             enrichment_concurrency=config.enrichment_concurrency,
+            connect_timeout_sec=config.connect_timeout_sec,
+            read_timeout_sec=config.read_timeout_sec,
+            write_timeout_sec=config.write_timeout_sec,
             languages=config.languages,
             azure_endpoint_env=(
                 config.azure_endpoint_env or defaults.get("azure_endpoint_env")

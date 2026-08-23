@@ -277,6 +277,33 @@ For remote Ollama servers, set `ai.base_url` in the active config file or set
 also recognized. If the value omits `/v1`, Horizon appends it automatically
 for Ollama's OpenAI-compatible endpoint.
 
+### AI request timeouts
+
+Horizon supports separate HTTP timeout phases in seconds:
+
+```json
+{
+  "ai": {
+    "connect_timeout_sec": 10,
+    "read_timeout_sec": 300,
+    "write_timeout_sec": 60
+  }
+}
+```
+
+- `connect_timeout_sec`: Maximum time to establish the API connection.
+- `read_timeout_sec`: Maximum time to wait for response data. This is usually
+  the most important setting for slow model generation.
+- `write_timeout_sec`: Maximum time to send the request body.
+- All three fields are optional and must be greater than `0`. If a field is
+  omitted, the provider's default for that phase is retained.
+- OpenAI-compatible, Azure OpenAI, and Anthropic clients apply the three
+  phases independently. The connection-pool timeout is not configurable.
+- Gemini only supports one request timeout through its SDK. Horizon maps
+  `read_timeout_sec` to that value (in milliseconds). `connect_timeout_sec`
+  and `write_timeout_sec` are ignored for Gemini and produce initialization
+  warnings.
+
 ### AI throttling
 
 If your model has a strict per-minute request cap, you can slow the scorer down in the active config file:

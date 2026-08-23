@@ -194,6 +194,15 @@ class AIConfig(BaseModel):
     api_key_env: str
     temperature: float = 0.3
     max_tokens: int = 4096
+    connect_timeout_sec: Optional[float] = Field(
+        default=None, gt=0, allow_inf_nan=False
+    )
+    read_timeout_sec: Optional[float] = Field(
+        default=None, gt=0, allow_inf_nan=False
+    )
+    write_timeout_sec: Optional[float] = Field(
+        default=None, gt=0, allow_inf_nan=False
+    )
     throttle_sec: float = 0.0
     analysis_concurrency: int = 1
     enrichment_concurrency: int = 1
