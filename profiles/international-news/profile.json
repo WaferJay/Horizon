@@ -44,18 +44,12 @@
       {
         "id": "international_impact",
         "type": "section",
-        "tools": ["web_search"]
+        "tools": []
       },
       {
         "id": "uncertainty",
         "type": "section",
         "tools": []
-      },
-      {
-        "id": "community_discussion",
-        "type": "section",
-        "tools": [],
-        "optional": true
       }
     ]
   }

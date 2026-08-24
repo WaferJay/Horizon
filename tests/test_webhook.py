@@ -787,6 +787,7 @@ class TestWebhookConfigModel:
         assert config.platform == "generic"
         assert config.layout == "markdown"
         assert config.fallback_layout == "markdown"
+        assert config.send_secondary_summary is False
 
     def test_full_config(self):
         config = WebhookConfig(
@@ -920,6 +921,47 @@ class TestSendDailySummary:
             vars = mock_notify.call_args[0][0]
             assert vars["message_title"] == "Horizon 2026-04-24 日报"
             assert vars["language"] == "zh"
+        del os.environ[_TEST_URL_ENV]
+
+    def test_secondary_summary_is_an_independent_event(self):
+        os.environ[_TEST_URL_ENV] = _TEST_URL
+        config = WebhookConfig(
+            enabled=True,
+            url_env=_TEST_URL_ENV,
+            send_secondary_summary=True,
+        )
+        notifier = WebhookNotifier(config)
+
+        with patch.object(notifier, "notify", new_callable=AsyncMock) as mock_notify:
+            _run_async(
+                notifier.send_daily_summary(
+                    summary="# Main summary",
+                    important_items=[_make_item()],
+                    all_items_count=10,
+                    date="2026-04-24",
+                    lang="zh",
+                    summarizer=DailySummarizer(),
+                )
+            )
+            _run_async(
+                notifier.send_secondary_summary(
+                    summary="# 补充资讯",
+                    secondary_items_count=2,
+                    important_items_count=1,
+                    all_items_count=10,
+                    date="2026-04-24",
+                    lang="zh",
+                )
+            )
+
+        assert mock_notify.call_count == 2
+        main_vars = mock_notify.call_args_list[0][0][0]
+        secondary_vars = mock_notify.call_args_list[1][0][0]
+        assert main_vars["message_kind"] == "summary"
+        assert secondary_vars["message_kind"] == "secondary_summary"
+        assert secondary_vars["message_title"] == "Horizon 2026-04-24 补充资讯"
+        assert secondary_vars["summary"] == "# 补充资讯"
+        assert secondary_vars["secondary_items"] == 2
         del os.environ[_TEST_URL_ENV]
 
     def test_summary_and_items_delivery_calls_notify_multiple_times(self):

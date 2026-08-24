@@ -360,6 +360,30 @@ def hz_get_run_stage(run_id: str, stage: str, max_items: int = 200) -> dict[str,
 
 
 @mcp.tool()
+def hz_get_run_secondary_items(
+    run_id: str, max_items: int = 200
+) -> dict[str, Any]:
+    """Read low-priority items selected for a run."""
+
+    started = perf_counter()
+    try:
+        data = service.get_run_secondary_items(run_id=run_id, max_items=max_items)
+        elapsed_ms = (perf_counter() - started) * 1000
+        _record_metrics("hz_get_run_secondary_items", ok=True, duration_ms=elapsed_ms)
+        return _ok("hz_get_run_secondary_items", data, duration_ms=elapsed_ms)
+    except Exception as exc:
+        elapsed_ms = (perf_counter() - started) * 1000
+        payload = _err("hz_get_run_secondary_items", exc, duration_ms=elapsed_ms)
+        _record_metrics(
+            "hz_get_run_secondary_items",
+            ok=False,
+            duration_ms=elapsed_ms,
+            error_code=payload["error"]["code"],
+        )
+        return payload
+
+
+@mcp.tool()
 def hz_get_run_summary(run_id: str, language: str = "zh") -> dict[str, Any]:
     """Read a generated run summary."""
 
@@ -374,6 +398,34 @@ def hz_get_run_summary(run_id: str, language: str = "zh") -> dict[str, Any]:
         payload = _err("hz_get_run_summary", exc, duration_ms=elapsed_ms)
         _record_metrics(
             "hz_get_run_summary",
+            ok=False,
+            duration_ms=elapsed_ms,
+            error_code=payload["error"]["code"],
+        )
+        return payload
+
+
+@mcp.tool()
+def hz_get_run_secondary_summary(
+    run_id: str, language: str = "zh"
+) -> dict[str, Any]:
+    """Read a standalone secondary brief for a run."""
+
+    started = perf_counter()
+    try:
+        data = service.get_run_secondary_summary(run_id=run_id, language=language)
+        elapsed_ms = (perf_counter() - started) * 1000
+        _record_metrics(
+            "hz_get_run_secondary_summary", ok=True, duration_ms=elapsed_ms
+        )
+        return _ok("hz_get_run_secondary_summary", data, duration_ms=elapsed_ms)
+    except Exception as exc:
+        elapsed_ms = (perf_counter() - started) * 1000
+        payload = _err(
+            "hz_get_run_secondary_summary", exc, duration_ms=elapsed_ms
+        )
+        _record_metrics(
+            "hz_get_run_secondary_summary",
             ok=False,
             duration_ms=elapsed_ms,
             error_code=payload["error"]["code"],
@@ -482,6 +534,16 @@ def r_run_items(run_id: str, stage: str) -> dict[str, Any]:
     )
 
 
+@mcp.resource("horizon://runs/{run_id}/secondary-items")
+def r_run_secondary_items(run_id: str) -> dict[str, Any]:
+    """Low-priority item selection resource."""
+
+    return _resource_result(
+        f"horizon://runs/{run_id}/secondary-items",
+        lambda: service.get_run_secondary_items(run_id=run_id, max_items=200),
+    )
+
+
 @mcp.resource("horizon://runs/{run_id}/summary/{language}")
 def r_run_summary(run_id: str, language: str) -> dict[str, Any]:
     """Run summary resource."""
@@ -489,6 +551,18 @@ def r_run_summary(run_id: str, language: str) -> dict[str, Any]:
     return _resource_result(
         f"horizon://runs/{run_id}/summary/{language}",
         lambda: service.get_run_summary(run_id=run_id, language=language),
+    )
+
+
+@mcp.resource("horizon://runs/{run_id}/secondary-summary/{language}")
+def r_run_secondary_summary(run_id: str, language: str) -> dict[str, Any]:
+    """Standalone secondary brief resource."""
+
+    return _resource_result(
+        f"horizon://runs/{run_id}/secondary-summary/{language}",
+        lambda: service.get_run_secondary_summary(
+            run_id=run_id, language=language
+        ),
     )
 
 

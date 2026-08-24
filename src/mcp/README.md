@@ -18,7 +18,9 @@ The MCP layer does not reimplement Horizon business logic. It reuses the existin
 | `hz_list_runs` | List recent run artifacts |
 | `hz_get_run_meta` | Read metadata for a run |
 | `hz_get_run_stage` | Read items from a run stage |
+| `hz_get_run_secondary_items` | Read low-priority items selected for a run |
 | `hz_get_run_summary` | Read a generated summary |
+| `hz_get_run_secondary_summary` | Read a standalone secondary brief |
 | `hz_get_metrics` | Read in-memory server metrics |
 
 ## Resources
@@ -28,7 +30,9 @@ The MCP layer does not reimplement Horizon business logic. It reuses the existin
 - `horizon://runs`
 - `horizon://runs/{run_id}/meta`
 - `horizon://runs/{run_id}/items/{stage}`
+- `horizon://runs/{run_id}/secondary-items`
 - `horizon://runs/{run_id}/summary/{language}`
+- `horizon://runs/{run_id}/secondary-summary/{language}`
 - `horizon://config/effective`
 
 ## Install and Start
@@ -52,8 +56,10 @@ Each run writes artifacts under `data/mcp-runs/<run_id>/`:
 - `raw_items.json`
 - `scored_items.json`
 - `filtered_items.json`
+- `low_priority_items.json`
 - `enriched_items.json`
 - `summary-<lang>.md`
+- `summary-secondary-<lang>.md`
 
 ## Design Principles
 

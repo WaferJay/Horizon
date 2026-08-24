@@ -190,7 +190,11 @@ def print_config_template():
     ],
     "category_groups": {},
     "default_group": "other",
-    "default_group_limit": null
+    "default_group_limit": null,
+    "secondary_brief": {
+      "min_score": 2.0,
+      "append_to_main": false
+    }
   },
   "processing": {
     "profiles_dir": "profiles",

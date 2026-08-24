@@ -628,7 +628,11 @@ digest limits:
       }
     },
     "default_group": "other",
-    "default_group_limit": 3
+    "default_group_limit": 3,
+    "secondary_brief": {
+      "min_score": 2.0,
+      "append_to_main": false
+    }
   }
 }
 ```
@@ -646,6 +650,18 @@ digest limits:
   configured group. Default is `other`.
 - `default_group_limit`: Optional positive limit for unmatched items. If omitted,
   unmatched items are unlimited except for `max_items`.
+- `secondary_brief.min_score`: Minimum score for the standalone brief of items
+  that fell below their profile threshold. It must be between `0` and `10`.
+- `secondary_brief.append_to_main`: Also append the secondary brief section to
+  the main report when `true`. The standalone file is always written regardless
+  of this setting, using `horizon-secondary-YYYY-MM-DD-<language>.md`.
+
+Secondary selection happens after the main digest is selected. Items with the
+same normalized URL are already merged before scoring; a secondary item that
+duplicates a main-digest item is excluded. When topic deduplication is enabled,
+the existing semantic deduplication is reused across the main and secondary
+sets, so the higher-scored item remains primary. If semantic deduplication
+cannot determine a match, Horizon keeps the items conservatively.
 
 Balanced digest filtering runs after configured profile filtering and topic
 deduplication, but before enrichment. This reduces enrichment calls to only the
@@ -765,6 +781,7 @@ Webhook notification is optional and disabled unless `webhook.enabled` is `true`
     "layout": "markdown",
     "fallback_layout": "markdown",
     "languages": null,
+    "send_secondary_summary": false,
     "request_body": {
       "text": "#{message_title}\n#{summary}"
     },
@@ -781,6 +798,11 @@ Webhook notification is optional and disabled unless `webhook.enabled` is `true`
 - `layout`: Controls the message layout. Use `markdown` for templated Markdown delivery, or `collapsible` with `platform: "feishu"` / `"lark"` for a single Feishu Card JSON 2.0 message with each item in a collapsed panel.
 - `fallback_layout`: Reserved fallback layout for unsupported platform/layout combinations. The current safe fallback is `markdown`.
 - `languages`: Optional webhook-only language filter. Use `["zh"]` or `["en"]` to send only selected languages; use `null` or omit it to send all configured `ai.languages`.
+- `send_secondary_summary`: Sends the standalone brief as an additional,
+  independent webhook event when `true`. Its `message_kind` is
+  `secondary_summary`; it is sent after the regular daily-summary events and
+  uses the same endpoint and request-body template with `#{summary}` set to the
+  secondary brief. It is disabled by default.
 - `request_body`: Optional request body. If empty, Horizon sends a `GET` request. If provided, Horizon sends a `POST` request.
 - `headers`: Optional custom headers, one `Key: Value` pair per line.
 

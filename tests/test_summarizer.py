@@ -4,6 +4,8 @@ import asyncio
 from datetime import datetime, timezone
 
 from src.ai.summarizer import DailySummarizer
+from src.ai.secondary_brief import SecondaryBriefText
+from src.services.secondary_brief import SecondaryBriefRenderer
 from src.models import (
     ArtifactSource,
     ClassificationResult,
@@ -155,6 +157,44 @@ def test_generate_summary_zh_uses_localized_selection_header_and_numeric_date():
     assert "rss · tester · 4月25日 08:00" in result
     assert "From 10 items" not in result
     assert "Apr 25, 08:00" not in result
+
+
+def test_generate_secondary_summary_renders_score_and_localized_text():
+    item = _make_item(1)
+    item.processing.analysis.score = 4.5
+
+    result = SecondaryBriefRenderer().render(
+        [item],
+        {
+            item.id: SecondaryBriefText(
+                title="Localized title",
+                summary="A concise localized summary.",
+            )
+        },
+        date="2026-04-25",
+        min_score=2.0,
+        language="en",
+    )
+
+    assert result.startswith("# Horizon Additional Brief - 2026-04-25")
+    assert "minimum score: 2.0" in result
+    assert "[Localized title](https://example.com/items/1)" in result
+    assert "⭐️ 4.5/10" in result
+    assert "A concise localized summary." in result
+
+
+def test_generate_secondary_summary_can_render_as_main_report_section():
+    result = SecondaryBriefRenderer().render(
+        [_make_item(1)],
+        {},
+        date="2026-04-25",
+        min_score=2.0,
+        language="zh",
+        standalone=False,
+    )
+
+    assert result.startswith("## 补充资讯")
+    assert "## Horizon" not in result
 
 
 def test_generate_summary_groups_items_by_profile_with_heading_hierarchy():

@@ -62,9 +62,6 @@ quotations, motives, or outcomes.
   responsibility, uncertain casualty numbers, unverified claims, and the limits
   of any conclusion. Do not hide uncertainty to make the briefing sound more
   decisive.
-- `community_discussion`: When comments are provided, summarise identifiable
-  agreement, disagreement, questions, or first-hand experience. Do not treat
-  the comments as representative public opinion.
 
 Use a short, factual title without clickbait. Keep each block focused and
 non-overlapping. If the supplied material cannot support a conclusion, omit

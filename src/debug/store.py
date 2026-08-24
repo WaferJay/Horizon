@@ -188,6 +188,23 @@ class DebugStore:
             write,
         )
 
+    def save_secondary_summary(
+        self,
+        language: str,
+        markdown: str,
+    ) -> Optional[Path]:
+        relative = Path("summaries") / f"summary-secondary-{language}.md"
+
+        def write() -> Path:
+            path = self._relative_path(*relative.parts)
+            _atomic_write_text(path, markdown)
+            return path
+
+        return self._safe(
+            f"secondary summary {language}",
+            write,
+        )
+
     def record_http(
         self,
         *,

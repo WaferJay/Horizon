@@ -42,6 +42,11 @@ from .ai.enricher import ContentEnricher, EnrichmentBatchResult
 from .ai.tokens import get_usage_snapshot
 from .processing import ProfileRegistry
 from .processing.tools import ToolRegistry
+from .services.secondary_brief import (
+    SecondaryBriefSelection,
+    SecondaryBriefSelector,
+    SecondaryBriefService,
+)
 
 
 _TRACKING_QUERY_PARAMETERS = {
@@ -320,6 +325,11 @@ class HorizonOrchestrator:
                 analyzed_items,
             )
             important_items = filtering_result.items
+            secondary_selection = await self.select_secondary_items(
+                analyzed_items,
+                important_items,
+            )
+            secondary_items = secondary_selection.items
             self._save_debug_stage(
                 "filtered",
                 important_items,
@@ -336,6 +346,15 @@ class HorizonOrchestrator:
                             filtering_result.balanced_digest.duplicate_categories
                         ),
                     },
+                },
+            )
+            self._save_debug_stage(
+                "low_priority",
+                secondary_items,
+                metadata={
+                    "min_score": self.config.digest.secondary_brief.min_score,
+                    "duplicate_ids": secondary_selection.duplicate_ids,
+                    "count": len(secondary_items),
                 },
             )
 
@@ -367,18 +386,44 @@ class HorizonOrchestrator:
 
             # 7. Generate and save daily summaries for each configured language
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            secondary_service = SecondaryBriefService(
+                config=self.config,
+                storage=self.storage,
+                client=(
+                    self._create_ai_client()
+                    if secondary_items and self.config.ai.languages
+                    else None
+                ),
+            )
             for lang in self.config.ai.languages:
                 summarizer = DailySummarizer(
                     profile_names=self.profiles.names,
                     profile_order=self.config.digest.profile_order,
                 )
-                summary = await summarizer.generate_summary(important_items, today, len(all_items), language=lang)
-                self._save_debug_summary(lang, summary)
+                summary = await summarizer.generate_summary(
+                    important_items,
+                    today,
+                    len(all_items),
+                    language=lang,
+                )
+                secondary_output = await secondary_service.build(
+                    secondary_items,
+                    summary,
+                    today,
+                    language=lang,
+                )
+                report = secondary_output.report
+                secondary_summary = secondary_output.summary
+                secondary_path = secondary_output.path
 
-                # Save to data/summaries/
-                summary_path = self.storage.save_daily_summary(today, summary, language=lang)
+                self._save_debug_summary(lang, report)
+                self._save_debug_secondary_summary(lang, secondary_summary)
+
+                summary_path = self.storage.save_daily_summary(today, report, language=lang)
                 self.console.print(
                     f"{self.icons['save']} Saved {lang.upper()} summary to: {summary_path}\n"
+                    f"{self.icons['save']} Saved {lang.upper()} secondary summary "
+                    f"to: {secondary_path}\n"
                 )
 
                 # Copy to docs/ for GitHub Pages
@@ -402,7 +447,7 @@ class HorizonOrchestrator:
                     )
 
                     # Strip leading H1 header to avoid duplication with Jekyll title
-                    summary_content = summary
+                    summary_content = report
                     first_line = summary_content.strip().split("\n")[0]
                     if first_line.startswith("# "):
                         parts = summary_content.split("\n", 1)
@@ -429,17 +474,25 @@ class HorizonOrchestrator:
                     )
                     subscribers = self.storage.load_subscribers()
                     subject = f"Horizon Summary ({lang.upper()}) - {today}"
-                    self.email_manager.send_daily_summary(summary, subject, subscribers)
+                    self.email_manager.send_daily_summary(report, subject, subscribers)
 
                 # Send webhook notification if configured
                 if self.webhook_notifier:
                     await self.webhook_notifier.send_daily_summary(
-                        summary=summary,
+                        summary=report,
                         important_items=important_items,
                         all_items_count=len(all_items),
                         date=today,
                         lang=lang,
                         summarizer=summarizer,
+                    )
+                    await self.webhook_notifier.send_secondary_summary(
+                        summary=secondary_summary,
+                        secondary_items_count=len(secondary_items),
+                        important_items_count=len(important_items),
+                        all_items_count=len(all_items),
+                        date=today,
+                        lang=lang,
                     )
 
             self.console.print(
@@ -504,6 +557,10 @@ class HorizonOrchestrator:
     def _save_debug_summary(self, language: str, summary: str) -> None:
         if self._debug_enabled():
             self.debug_store.save_summary(language, summary)
+
+    def _save_debug_secondary_summary(self, language: str, summary: str) -> None:
+        if self._debug_enabled():
+            self.debug_store.save_secondary_summary(language, summary)
 
     def _finish_debug(
         self, status: str, error: Optional[BaseException] = None
@@ -950,6 +1007,30 @@ class HorizonOrchestrator:
             topic_dedup_removed=initial.topic_dedup_removed,
             balanced_digest=balanced,
             eligible_count=len(eligible),
+        )
+
+    async def select_secondary_items(
+        self,
+        items: List[ContentItem],
+        main_items: List[ContentItem],
+        *,
+        threshold: Optional[float] = None,
+        topic_dedup: bool = True,
+        log: bool = True,
+    ) -> SecondaryBriefSelection:
+        """Delegate optional low-priority selection to its extension service."""
+        selector = SecondaryBriefSelector(
+            config=self.config,
+            default_profile=self.profiles.default_profile,
+            topic_deduplicator=self.merge_topic_duplicates,
+            url_key=_deduplication_url_key,
+        )
+        return await selector.select(
+            items,
+            main_items,
+            threshold=threshold,
+            topic_dedup=topic_dedup,
+            log=log,
         )
 
     def passes_profile_filter(

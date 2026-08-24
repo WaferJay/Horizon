@@ -480,6 +480,7 @@ class WebhookConfig(BaseModel):
     languages: Optional[List[str]] = (
         None  # Optional language filter for webhook delivery; defaults to all AI languages
     )
+    send_secondary_summary: bool = False
     enabled: bool = False
 
     @field_validator("delivery")
@@ -587,6 +588,15 @@ class CollectionConfig(BaseModel):
     time_window_hours: int = 24
 
 
+class SecondaryBriefConfig(BaseModel):
+    """Controls the optional low-priority news brief."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    min_score: float = Field(default=0.0, ge=0, le=10)
+    append_to_main: bool = False
+
+
 class DigestConfig(BaseModel):
     """Controls grouping and limits in the final digest."""
 
@@ -597,6 +607,7 @@ class DigestConfig(BaseModel):
     default_group: str = "other"
     default_group_limit: Optional[int] = Field(default=None, gt=0)
     profile_order: List[str] = Field(default_factory=list)
+    secondary_brief: SecondaryBriefConfig = Field(default_factory=SecondaryBriefConfig)
 
     @field_validator("profile_order")
     @classmethod

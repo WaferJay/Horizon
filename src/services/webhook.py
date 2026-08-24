@@ -823,6 +823,50 @@ class WebhookNotifier:
         for message in messages:
             await self.notify(message)
 
+    async def send_secondary_summary(
+        self,
+        summary: str,
+        secondary_items_count: int,
+        important_items_count: int,
+        all_items_count: int,
+        date: str,
+        lang: str,
+    ) -> None:
+        """Send the secondary brief as its own webhook event."""
+        if not getattr(self.config, "send_secondary_summary", False):
+            return
+        if not summary or secondary_items_count <= 0:
+            return
+        webhook_languages = getattr(self.config, "languages", None)
+        if webhook_languages and lang not in webhook_languages:
+            self.console.print(
+                f"{self.icons['webhook_skip']} Skipping {lang.upper()} secondary "
+                "webhook notification (filtered by webhook.languages)"
+            )
+            return
+
+        variables = {
+            "date": date,
+            "language": lang,
+            "important_items": important_items_count,
+            "all_items": all_items_count,
+            "secondary_items": secondary_items_count,
+            "result": "success",
+            "timestamp": str(int(datetime.now(timezone.utc).timestamp())),
+            "message_title": (
+                f"Horizon {date} 补充资讯"
+                if lang == "zh"
+                else f"Horizon {date} Additional Brief"
+            ),
+            "message_kind": "secondary_summary",
+            "summary": summary,
+        }
+        self.console.print(
+            f"{self.icons['webhook']} Sending {lang.upper()} secondary "
+            "webhook notification..."
+        )
+        await self.notify(variables)
+
     async def send_failure(
         self,
         date: str,

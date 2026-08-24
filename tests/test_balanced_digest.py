@@ -18,6 +18,7 @@ from src.models import (
     ProcessingConfig,
     ProcessingResult,
     ProfileSettingsConfig,
+    SecondaryBriefConfig,
     SourceType,
     SourcesConfig,
 )
@@ -256,6 +257,12 @@ def test_duplicate_category_warns_and_first_group_wins() -> None:
 def test_digest_config_rejects_invalid_values(kwargs) -> None:
     with pytest.raises(ValidationError):
         DigestConfig(**kwargs)
+
+
+@pytest.mark.parametrize("min_score", [-0.1, 10.1])
+def test_secondary_brief_config_rejects_invalid_min_score(min_score) -> None:
+    with pytest.raises(ValidationError):
+        SecondaryBriefConfig(min_score=min_score)
 
 
 def test_run_applies_balanced_digest_before_enrichment(tmp_path, monkeypatch) -> None:

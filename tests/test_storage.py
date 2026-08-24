@@ -194,6 +194,17 @@ def test_save_daily_summary_defensively_rejects_path_escape(tmp_path):
     assert not (tmp_path / "outside.md").exists()
 
 
+def test_save_secondary_summary_uses_stable_filename(tmp_path):
+    storage = StorageManager(data_dir=str(tmp_path / "data"))
+
+    path = storage.save_secondary_summary(
+        "2026-08-23", "# 补充资讯", language="zh"
+    )
+
+    assert path.name == "horizon-secondary-2026-08-23-zh.md"
+    assert path.read_text(encoding="utf-8") == "# 补充资讯"
+
+
 def test_safe_output_path_rejects_escape_from_other_output_roots(tmp_path):
     with pytest.raises(ValueError, match="escapes intended root"):
         safe_output_path(tmp_path / "docs" / "_posts", "../../../outside.md")

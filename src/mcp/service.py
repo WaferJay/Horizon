@@ -29,6 +29,7 @@ from .horizon_adapter import (
 )
 from .run_store import RunStore
 from ..services.webhook import WebhookNotifier
+from .secondary_brief import build_secondary_summary, select_secondary_items
 
 
 _REDACTED = "<redacted>"
@@ -196,6 +197,31 @@ class HorizonPipelineService:
             "truncated": len(items) > max_items,
         }
 
+    def get_run_secondary_items(
+        self, run_id: str, max_items: int = 200
+    ) -> dict[str, Any]:
+        """Read the low-priority selection for a run."""
+
+        if max_items <= 0:
+            raise HorizonMcpError(
+                code="HZ_INVALID_INPUT", message="max_items must be greater than 0."
+            )
+        try:
+            items = self.run_store.load_secondary_items(run_id)
+        except FileNotFoundError as exc:
+            raise HorizonMcpError(
+                code="HZ_SECONDARY_ITEMS_NOT_FOUND",
+                message=f"run_id={run_id} has no secondary item artifact.",
+                details={"run_id": run_id},
+            ) from exc
+        return {
+            "run_id": run_id,
+            "stage": "low_priority",
+            "count": len(items),
+            "items": items[:max_items],
+            "truncated": len(items) > max_items,
+        }
+
     def get_run_summary(self, run_id: str, language: str = "zh") -> dict[str, Any]:
         """Read generated markdown summary for a run."""
 
@@ -205,6 +231,28 @@ class HorizonPipelineService:
             raise HorizonMcpError(
                 code="HZ_SUMMARY_NOT_FOUND",
                 message=f"run_id={run_id} is missing summary for language={language}.",
+                details={"run_id": run_id, "language": language},
+            ) from exc
+        return {
+            "run_id": run_id,
+            "language": language,
+            "summary": markdown,
+        }
+
+    def get_run_secondary_summary(
+        self, run_id: str, language: str = "zh"
+    ) -> dict[str, Any]:
+        """Read the standalone secondary brief for a run."""
+
+        try:
+            markdown = self.run_store.load_secondary_summary(run_id, language)
+        except FileNotFoundError as exc:
+            raise HorizonMcpError(
+                code="HZ_SECONDARY_SUMMARY_NOT_FOUND",
+                message=(
+                    f"run_id={run_id} is missing secondary summary for "
+                    f"language={language}."
+                ),
                 details={"run_id": run_id, "language": language},
             ) from exc
         return {
@@ -289,6 +337,9 @@ class HorizonPipelineService:
                 },
                 "default_group": ctx.config.digest.default_group,
                 "default_group_limit": ctx.config.digest.default_group_limit,
+                "secondary_brief": ctx.config.digest.secondary_brief.model_dump(
+                    mode="json"
+                ),
             },
             "enabled_sources": get_enabled_sources(ctx.config),
             "processing": {
@@ -439,7 +490,22 @@ class HorizonPipelineService:
             else filtering_result.topic_dedup_count
         )
 
+        secondary_items, secondary_duplicate_ids = await select_secondary_items(
+            orchestrator,
+            items,
+            important_items,
+            threshold=threshold,
+            topic_dedup=topic_dedup,
+        )
+        secondary_config = getattr(
+            getattr(ctx.config, "digest", None), "secondary_brief", None
+        )
+        secondary_min_score = getattr(secondary_config, "min_score", 0.0)
+
         self.run_store.save_items(run_id, "filtered", items_to_dicts(important_items))
+        secondary_artifact = self.run_store.save_secondary_items(
+            run_id, items_to_dicts(secondary_items)
+        )
         meta = self.run_store.update_meta(
             run_id,
             {
@@ -455,6 +521,9 @@ class HorizonPipelineService:
                 "balanced_digest_removed": (
                     eligible_count - len(important_items)
                 ),
+                "secondary_count": len(secondary_items),
+                "secondary_min_score": secondary_min_score,
+                "secondary_duplicate_ids": list(secondary_duplicate_ids),
             },
         )
 
@@ -473,6 +542,9 @@ class HorizonPipelineService:
             "group_counts": balanced_group_counts,
             "source_counts": get_source_counts(important_items),
             "artifact": str((self.run_store.run_dir(run_id) / "filtered_items.json").resolve()),
+            "secondary_count": len(secondary_items),
+            "secondary_duplicate_ids": list(secondary_duplicate_ids),
+            "secondary_artifact": str(secondary_artifact.resolve()),
             "meta": meta,
         }
 
@@ -554,6 +626,12 @@ class HorizonPipelineService:
         total_fetched = self._total_fetched(run_id, fallback=len(items))
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+        try:
+            secondary_payload = self.run_store.load_secondary_items(run_id)
+        except FileNotFoundError:
+            secondary_payload = []
+        secondary_items = dicts_to_items(ctx.runtime, secondary_payload)
+
         summarizer = ctx.runtime.DailySummarizer(
             profile_names=self._profiles(ctx).names,
             profile_order=ctx.config.digest.profile_order,
@@ -565,20 +643,48 @@ class HorizonPipelineService:
             language=language,
         )
 
-        run_summary_path = self.run_store.save_summary(run_id, language, summary)
+        secondary_output = await build_secondary_summary(
+            ctx,
+            secondary_items,
+            summary,
+            date_str,
+            language=language,
+            save_to_horizon_data=save_to_horizon_data,
+        )
+        report = secondary_output.report
+        secondary_summary = secondary_output.summary
+        secondary_storage = secondary_output.storage
+        secondary_published_path = secondary_output.published_path
+
+        run_summary_path = self.run_store.save_summary(run_id, language, report)
+        run_secondary_summary_path = self.run_store.save_secondary_summary(
+            run_id, language, secondary_summary
+        )
         published_path = None
         if save_to_horizon_data:
-            storage = make_storage(ctx.runtime, ctx.config_path)
-            published_path = storage.save_daily_summary(date_str, summary, language=language)
+            storage = secondary_storage or make_storage(ctx.runtime, ctx.config_path)
+            published_path = storage.save_daily_summary(
+                date_str, report, language=language
+            )
+            if secondary_published_path is None:
+                secondary_published_path = storage.save_secondary_summary(
+                    date_str, secondary_summary, language=language
+                )
 
         summary_meta = {
             "summary_stage": stage,
             "summary_language": language,
             "summary_generated_at": datetime.now(timezone.utc).isoformat(),
             "summary_artifact": str(run_summary_path.resolve()),
+            "secondary_count": len(secondary_items),
+            "secondary_summary_artifact": str(run_secondary_summary_path.resolve()),
         }
         if published_path:
             summary_meta["summary_published_path"] = str(Path(published_path).resolve())
+        if secondary_published_path:
+            summary_meta["secondary_summary_published_path"] = str(
+                Path(secondary_published_path).resolve()
+            )
         meta = self.run_store.update_meta(run_id, summary_meta)
 
         return {
@@ -589,7 +695,14 @@ class HorizonPipelineService:
             "items_used": len(items),
             "summary_path": str(run_summary_path.resolve()),
             "published_path": str(Path(published_path).resolve()) if published_path else None,
-            "preview": summary[:1200],
+            "secondary_items_used": len(secondary_items),
+            "secondary_summary_path": str(run_secondary_summary_path.resolve()),
+            "secondary_published_path": (
+                str(Path(secondary_published_path).resolve())
+                if secondary_published_path
+                else None
+            ),
+            "preview": report[:1200],
             "meta": meta,
         }
 

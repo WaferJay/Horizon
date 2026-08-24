@@ -469,6 +469,32 @@ def test_generate_summary_persists_informative_empty_summary(
     assert result["preview"] == expected[:1200]
 
 
+def test_get_run_secondary_summary_reads_standalone_artifact(tmp_path: Path) -> None:
+    service = HorizonPipelineService(runs_root=tmp_path / "mcp-runs")
+    run_id = service.run_store.create_run("run-secondary-read")
+    service.run_store.save_secondary_summary(run_id, "zh", "# 补充资讯")
+
+    result = service.get_run_secondary_summary(run_id, language="zh")
+
+    assert result == {
+        "run_id": run_id,
+        "language": "zh",
+        "summary": "# 补充资讯",
+    }
+
+
+def test_get_run_secondary_items_reads_selection_artifact(tmp_path: Path) -> None:
+    service = HorizonPipelineService(runs_root=tmp_path / "mcp-runs")
+    run_id = service.run_store.create_run("run-secondary-items")
+    service.run_store.save_secondary_items(run_id, [{"id": "low"}])
+
+    result = service.get_run_secondary_items(run_id)
+
+    assert result["stage"] == "low_priority"
+    assert result["count"] == 1
+    assert result["items"] == [{"id": "low"}]
+
+
 def test_run_pipeline_skips_enrichment_when_filter_is_empty(
     tmp_path: Path, monkeypatch
 ) -> None:

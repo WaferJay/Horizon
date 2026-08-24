@@ -3,48 +3,14 @@
 import html
 import re
 from dataclasses import dataclass
-from typing import Dict, List, Optional
-from urllib.parse import quote, urlsplit
+from typing import Dict, List, Mapping, Optional
 
+from .markdown import escape_markdown as _escape_markdown
+from .markdown import pangu as _pangu
+from .markdown import safe_url as _safe_url
 from .localization import normalize_language
+from .secondary_brief import SecondaryBriefText
 from ..models import ContentItem
-
-
-_CJK = r"[\u4e00-\u9fff\u3400-\u4dbf]"
-_ASCII = r"[A-Za-z0-9]"
-_MARKDOWN_SPECIAL = re.compile(r"([\\`*_{}\[\]()<>#!|])")
-_MARKDOWN_BLOCK_START = re.compile(r"(?m)^( {0,3})(>|[-+] |\d+[.)] )")
-_URL_SAFE_CHARS = ":/?#[]@!$&'*,;=~%+"
-
-
-def _escape_markdown(value: object) -> str:
-    """Render untrusted text literally while retaining its readable content."""
-    escaped = html.escape(str(value), quote=True)
-    escaped = _MARKDOWN_SPECIAL.sub(r"\\\1", escaped)
-    return _MARKDOWN_BLOCK_START.sub(r"\1\\\2", escaped)
-
-
-def _safe_url(value: object) -> Optional[str]:
-    """Return an HTML/Markdown-safe HTTP(S) URL, or None for unsafe URLs."""
-    raw = str(value).strip()
-    if not raw or any(ord(char) < 32 or ord(char) == 127 for char in raw):
-        return None
-    try:
-        parsed = urlsplit(raw)
-        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
-            return None
-        parsed.port
-    except (TypeError, ValueError):
-        return None
-    encoded = quote(raw, safe=_URL_SAFE_CHARS)
-    return html.escape(encoded, quote=True)
-
-
-def _pangu(text: str) -> str:
-    """Insert a space between CJK and ASCII letters/digits (Pangu spacing)."""
-    text = re.sub(rf"({_CJK})({_ASCII})", r"\1 \2", text)
-    text = re.sub(rf"({_ASCII})({_CJK})", r"\1 \2", text)
-    return text
 
 
 LABELS = {
@@ -272,6 +238,28 @@ class DailySummarizer:
 
         toc = "\n\n".join(toc_sections) + "\n\n---\n\n"
         return normalize_language(header + toc + "".join(body_sections), language)
+
+    def generate_secondary_summary(
+        self,
+        items: List[ContentItem],
+        texts: Mapping[str, SecondaryBriefText],
+        date: str,
+        min_score: float,
+        language: str = "en",
+        *,
+        standalone: bool = True,
+    ) -> str:
+        """Compatibility facade for callers using the main summarizer API."""
+        from ..services.secondary_brief import SecondaryBriefRenderer
+
+        return SecondaryBriefRenderer().render(
+            items,
+            texts,
+            date,
+            min_score,
+            language,
+            standalone=standalone,
+        )
 
     def generate_webhook_overview(
         self,

@@ -24,8 +24,10 @@ _META_PREFIXES = {
     "scored": ("scored_", "selected_count"),
     "filtered": ("filtered_", "filter_", "topic_", "balanced_"),
     "enriched": ("enrichment_", "enriched_", "citation_count"),
+    "secondary": ("secondary_",),
     "summary": ("summary_",),
 }
+_SECONDARY_ITEMS_FILE = "low_priority_items.json"
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 LANGUAGE_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -75,7 +77,12 @@ class RunStore:
             (run_dir / STAGES[downstream]).unlink(missing_ok=True)
         for summary_path in run_dir.glob("summary-*.md"):
             summary_path.unlink()
-        self._invalidate_meta(run_id, (*STAGE_ORDER[stage_index + 1 :], "summary"))
+        if stage_index <= STAGE_ORDER.index("filtered"):
+            (run_dir / _SECONDARY_ITEMS_FILE).unlink(missing_ok=True)
+        invalidated_meta = (*STAGE_ORDER[stage_index + 1 :], "summary")
+        if stage_index <= STAGE_ORDER.index("filtered"):
+            invalidated_meta += ("secondary",)
+        self._invalidate_meta(run_id, invalidated_meta)
 
     def invalidate_from(self, run_id: str, stage: str) -> None:
         """Remove a stage and every artifact derived from it."""
@@ -88,7 +95,12 @@ class RunStore:
             (run_dir / STAGES[invalidated]).unlink(missing_ok=True)
         for summary_path in run_dir.glob("summary-*.md"):
             summary_path.unlink()
-        self._invalidate_meta(run_id, (*STAGE_ORDER[stage_index:], "summary"))
+        if stage_index <= STAGE_ORDER.index("filtered"):
+            (run_dir / _SECONDARY_ITEMS_FILE).unlink(missing_ok=True)
+        invalidated_meta = (*STAGE_ORDER[stage_index:], "summary")
+        if stage_index <= STAGE_ORDER.index("filtered"):
+            invalidated_meta += ("secondary",)
+        self._invalidate_meta(run_id, invalidated_meta)
 
     def _invalidate_meta(self, run_id: str, stages: tuple[str, ...]) -> None:
         prefixes = tuple(
@@ -108,6 +120,16 @@ class RunStore:
     def load_items(self, run_id: str, stage: str) -> list[dict[str, Any]]:
         return self.read_json(run_id, self._stage_file(stage))
 
+    def save_secondary_items(
+        self, run_id: str, items: list[dict[str, Any]]
+    ) -> Path:
+        """Save the low-priority selection alongside the regular stages."""
+        return self.write_json(run_id, _SECONDARY_ITEMS_FILE, items)
+
+    def load_secondary_items(self, run_id: str) -> list[dict[str, Any]]:
+        """Load the low-priority selection for a pipeline run."""
+        return self.read_json(run_id, _SECONDARY_ITEMS_FILE)
+
     def save_summary(self, run_id: str, language: str, markdown: str) -> Path:
         filename = self._summary_file(language)
         path = self.run_dir(run_id) / filename
@@ -118,6 +140,21 @@ class RunStore:
         path = self.run_dir(run_id) / self._summary_file(language)
         if not path.exists():
             raise FileNotFoundError(f"Summary not found: run={run_id} lang={language}")
+        return path.read_text(encoding="utf-8")
+
+    def save_secondary_summary(
+        self, run_id: str, language: str, markdown: str
+    ) -> Path:
+        path = self.run_dir(run_id) / self._secondary_summary_file(language)
+        _atomic_write_text(path, markdown)
+        return path
+
+    def load_secondary_summary(self, run_id: str, language: str) -> str:
+        path = self.run_dir(run_id) / self._secondary_summary_file(language)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"Secondary summary not found: run={run_id} lang={language}"
+            )
         return path.read_text(encoding="utf-8")
 
     def update_meta(self, run_id: str, updates: dict[str, Any]) -> dict[str, Any]:
@@ -194,6 +231,12 @@ class RunStore:
         if not LANGUAGE_RE.fullmatch(language):
             raise ValueError("Invalid summary language")
         return f"summary-{language}.md"
+
+    @staticmethod
+    def _secondary_summary_file(language: str) -> str:
+        if not LANGUAGE_RE.fullmatch(language):
+            raise ValueError("Invalid summary language")
+        return f"summary-secondary-{language}.md"
 
     @staticmethod
     def _make_run_id() -> str:

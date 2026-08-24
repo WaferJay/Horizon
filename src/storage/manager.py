@@ -129,6 +129,20 @@ class StorageManager:
 
         return filepath
 
+    def save_secondary_summary(
+        self,
+        date: str,
+        markdown: str,
+        language: str = "en",
+    ) -> Path:
+        """Save the standalone low-priority news brief."""
+        filename = f"horizon-secondary-{date}-{language}.md"
+        filepath = safe_output_path(self.summaries_dir, filename)
+
+        _atomic_write_text(filepath, markdown)
+
+        return filepath
+
     def load_subscribers(self) -> list:
         """Loads the list of email subscribers."""
         subscribers_path = self.data_dir / "subscribers.json"

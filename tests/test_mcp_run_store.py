@@ -53,6 +53,20 @@ def test_save_and_load_summary(tmp_path: Path) -> None:
     assert content == "# 摘要"
 
 
+def test_save_and_load_secondary_artifacts(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    run_id = store.create_run("run-secondary")
+    items = [{"id": "low", "score": 4.0}]
+
+    items_path = store.save_secondary_items(run_id, items)
+    summary_path = store.save_secondary_summary(run_id, "zh", "# 补充资讯")
+
+    assert items_path.name == "low_priority_items.json"
+    assert store.load_secondary_items(run_id) == items
+    assert summary_path.name == "summary-secondary-zh.md"
+    assert store.load_secondary_summary(run_id, "zh") == "# 补充资讯"
+
+
 def test_saving_upstream_stage_invalidates_downstream_artifacts(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
     run_id = store.create_run("run-invalidation")
