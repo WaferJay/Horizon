@@ -21,6 +21,20 @@ _FEED = """<?xml version="1.0" encoding="UTF-8" ?>
 """
 _SINCE = datetime(2026, 4, 24, 0, 0, tzinfo=timezone.utc)
 
+_ATOM_WITH_RELATIVE_LINK = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Generated Atom</title>
+  <entry>
+    <id>entry-1</id>
+    <title>Item 1</title>
+    <link rel="alternate" href="/pages/example.com/item-1.html" />
+    <link rel="via" href="https://example.com/item-1" />
+    <published>2026-04-24T12:00:00Z</published>
+    <summary>Short summary from feed.</summary>
+  </entry>
+</feed>
+"""
+
 
 def _make_feed_client(feed_text: str) -> AsyncMock:
     response = MagicMock()
@@ -45,6 +59,19 @@ def test_rss_ids_are_deterministic() -> None:
     assert first == second
     assert first == "rss:example.com_feed.xml:5e2d5d1e58e94d76"
     assert first_item.profile == "rss-profile"
+
+
+def test_relative_atom_link_uses_absolute_via_url() -> None:
+    client = _make_feed_client(_ATOM_WITH_RELATIVE_LINK)
+    source = RSSSourceConfig(
+        name="Generated Atom",
+        url="https://raw.example.com/atoms/example.com/feed.xml",
+    )
+
+    items = asyncio.run(RSSScraper([source], client).fetch(_SINCE))
+
+    assert len(items) == 1
+    assert str(items[0].url) == "https://example.com/item-1"
 
 
 def _make_registry(name: str, extractor):

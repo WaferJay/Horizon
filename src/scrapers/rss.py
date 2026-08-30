@@ -7,6 +7,7 @@ import os
 import re
 from datetime import datetime, timezone
 from typing import List, Optional
+from urllib.parse import urljoin, urlparse
 from email.utils import parsedate_to_datetime
 import httpx
 import feedparser
@@ -102,13 +103,13 @@ class RSSScraper(BaseScraper):
 
                 # Extract content
                 content = self._extract_content(entry)
+                entry_url = self._entry_url(entry, feed_url)
 
                 if source.content_extractor and self._extractors:
                     extractor = self._extractors.get(source.content_extractor)
                     if extractor:
-                        url = entry.get("link", "")
-                        if url:
-                            full = await extractor.extract(url, self.client)
+                        if entry_url:
+                            full = await extractor.extract(entry_url, self.client)
                             if full:
                                 content = full
 
@@ -116,7 +117,7 @@ class RSSScraper(BaseScraper):
                     id=self._generate_id("rss", feed_id, entry_hash),
                     source_type=SourceType.RSS,
                     title=entry.get("title", "Untitled"),
-                    url=entry.get("link", str(source.url)),
+                    url=entry_url,
                     content=content,
                     author=entry.get("author", source.name),
                     published_at=published_at,
@@ -135,6 +136,26 @@ class RSSScraper(BaseScraper):
             logger.warning("Error parsing RSS feed %s: %s", source.name, e)
 
         return items
+
+    def _entry_url(self, entry: dict, feed_url: str) -> str:
+        """Return an absolute article URL for an RSS or Atom entry."""
+        link = str(entry.get("link") or "")
+        if urlparse(link).scheme in {"http", "https"}:
+            return link
+
+        # Some generated Atom feeds publish a local archive path as the
+        # alternate link and preserve the canonical article as rel="via".
+        # Prefer that canonical absolute URL before resolving a relative path
+        # against the feed endpoint.
+        for candidate in entry.get("links", []):
+            href = str(candidate.get("href") or "")
+            if (
+                candidate.get("rel") == "via"
+                and urlparse(href).scheme in {"http", "https"}
+            ):
+                return href
+
+        return urljoin(feed_url, link) if link else feed_url
 
     def _parse_date(self, entry: dict) -> datetime:
         """Parse publication date from feed entry.
