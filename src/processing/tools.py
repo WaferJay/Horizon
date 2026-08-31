@@ -10,6 +10,10 @@ from ddgs import DDGS
 logger = logging.getLogger(__name__)
 
 
+class ToolInputError(ValueError):
+    """A recoverable error caused by model-generated tool arguments."""
+
+
 @dataclass(frozen=True)
 class ToolResult:
     request_id: str
@@ -24,7 +28,7 @@ class WebSearchTool:
     async def execute(self, arguments: dict[str, Any]) -> list[dict[str, str]]:
         query = arguments.get("query")
         if not isinstance(query, str) or not query.strip():
-            raise ValueError("web_search requires a non-empty query")
+            raise ToolInputError("web_search requires a non-empty query")
         try:
             raw = await asyncio.to_thread(DDGS().text, query.strip(), max_results=3)
         except Exception as exc:

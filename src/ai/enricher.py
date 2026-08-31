@@ -32,7 +32,7 @@ from .utils import parse_json_response_with_error
 from ..models import ArtifactSource, ContentArtifact, ContentBlock, ContentItem
 from ..debug.context import debug_scope
 from ..processing.profiles import LoadedProfile, ProfileBlock, ProfileRegistry
-from ..processing.tools import ToolRegistry, ToolResult
+from ..processing.tools import ToolInputError, ToolRegistry, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,10 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 JSON_RESPONSE_ATTEMPTS = 3
 ENRICHMENT_ATTEMPTS = 2
 MAX_REPAIR_RESPONSE_CHARS = 8000
+
+
+class ModelOutputError(ValueError):
+    """A model response remained invalid after output-repair attempts."""
 
 
 class ToolRequest(BaseModel):
@@ -185,12 +189,15 @@ class ContentEnricher:
         user: str,
         error_message: str,
         validator: Optional[Callable[[ModelT], None]] = None,
+        attempts: int = JSON_RESPONSE_ATTEMPTS,
     ) -> ModelT:
+        if attempts < 1:
+            raise ValueError("attempts must be at least 1")
         validation_error: Optional[Exception] = None
         base_user = user
         diagnostic = ""
         response = ""
-        for attempt in range(JSON_RESPONSE_ATTEMPTS):
+        for attempt in range(attempts):
             request: dict[str, Any] = {
                 "system": system,
                 "user": (
@@ -214,7 +221,7 @@ class ContentEnricher:
             except (ValidationError, ValueError) as exc:
                 validation_error = exc
                 diagnostic = parse_error or str(exc)
-        raise ValueError(error_message) from validation_error
+        raise ModelOutputError(error_message) from validation_error
 
     async def enrich_batch(self, items: list[ContentItem]) -> EnrichmentBatchResult:
         semaphore = asyncio.Semaphore(self._get_concurrency())
@@ -343,36 +350,122 @@ class ContentEnricher:
         if not any(allowed.values()):
             return []
 
+        system = tool_planning_prompt(profile.definition.enrichment.blocks)
+        user = item_context(item, profile, include_content=True)
         with debug_scope(operation="tool_plan", block_id="tool_plan"):
-            plan = await self._complete_model(
-                ToolPlan,
-                system=tool_planning_prompt(profile.definition.enrichment.blocks),
-                user=item_context(item, profile, include_content=True),
-                error_message="Invalid enrichment tool plan",
-            )
+            try:
+                plan = await self._complete_model(
+                    ToolPlan,
+                    system=system,
+                    user=user,
+                    error_message="Invalid enrichment tool plan",
+                )
+            except ModelOutputError as exc:
+                logger.warning(
+                    "Invalid enrichment tool plan; continuing without tools: %s",
+                    exc.__cause__ or exc,
+                )
+                return []
+
+            requests, errors = self._partition_tool_requests(plan, allowed)
+            if errors:
+                diagnostic = "\n".join(f"- {error}" for error in errors)
+                logger.warning(
+                    "Invalid enrichment tool plan; requesting one correction: %s",
+                    "; ".join(errors),
+                )
+                try:
+                    corrected = await self._complete_model(
+                        ToolPlan,
+                        system=system,
+                        user=user
+                        + self._repair_feedback(
+                            diagnostic,
+                            plan.model_dump_json(),
+                        ),
+                        error_message="Invalid corrected enrichment tool plan",
+                        attempts=1,
+                    )
+                except ModelOutputError as exc:
+                    logger.warning(
+                        "Tool plan correction was invalid; keeping %s valid "
+                        "request(s) from the original plan: %s",
+                        len(requests),
+                        exc.__cause__ or exc,
+                    )
+                else:
+                    requests, errors = self._partition_tool_requests(
+                        corrected,
+                        allowed,
+                    )
+                    for error in errors:
+                        logger.warning(
+                            "Ignoring invalid enrichment tool request after "
+                            "correction: %s",
+                            error,
+                        )
 
         results = []
-        seen = set()
-        for request in plan.tool_requests[:MAX_TOOL_REQUESTS]:
-            if request.block_id not in allowed:
-                raise ValueError(f"Tool request targets unknown block: {request.block_id}")
-            if request.tool not in allowed[request.block_id]:
-                raise ValueError(
-                    f"Tool {request.tool} is not allowed for block {request.block_id}"
-                )
-            key = (request.block_id, request.tool, json.dumps(request.arguments, sort_keys=True))
-            if key in seen:
-                continue
-            seen.add(key)
-            results.append(
-                await self.tools.execute(
+        for request in requests:
+            try:
+                result = await self.tools.execute(
                     request_id=f"tool-{len(results) + 1}",
                     block_id=request.block_id,
                     tool=request.tool,
                     arguments=request.arguments,
                 )
-            )
+            except ToolInputError as exc:
+                logger.warning(
+                    "Ignoring invalid arguments for enrichment tool %s on "
+                    "block %s: %s",
+                    request.tool,
+                    request.block_id,
+                    exc,
+                )
+                continue
+            results.append(result)
         return results
+
+    @staticmethod
+    def _partition_tool_requests(
+        plan: ToolPlan,
+        allowed: dict[str, set[str]],
+    ) -> tuple[list[ToolRequest], list[str]]:
+        valid: list[ToolRequest] = []
+        errors: list[str] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        if len(plan.tool_requests) > MAX_TOOL_REQUESTS:
+            errors.append(
+                f"plan contains {len(plan.tool_requests)} requests; "
+                f"at most {MAX_TOOL_REQUESTS} are allowed"
+            )
+
+        for index, request in enumerate(plan.tool_requests, start=1):
+            if request.block_id not in allowed:
+                errors.append(
+                    f"request {index} targets unknown block {request.block_id}"
+                )
+                continue
+            if request.tool not in allowed[request.block_id]:
+                permitted = ", ".join(sorted(allowed[request.block_id])) or "no tools"
+                errors.append(
+                    f"request {index} uses tool {request.tool}, which is not "
+                    f"allowed for block {request.block_id} (allowed: {permitted})"
+                )
+                continue
+            key = (
+                request.block_id,
+                request.tool,
+                json.dumps(request.arguments, sort_keys=True),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(valid) < MAX_TOOL_REQUESTS:
+                valid.append(request)
+
+        return valid, errors
 
     async def _generate_artifact(
         self,
@@ -416,7 +509,11 @@ class ContentEnricher:
                     system=artifact_prompt(profile, language, base_blocks),
                     user=(
                         item_context(item, profile, include_content=True)
-                        + "\n\n# Tool results\n\nNo tool results are available to these blocks."
+                        + "\n\n# Tool results\n\n"
+                        "No tool results are available to these blocks. Use only "
+                        "the source item and supplied analysis. Do not retry tool "
+                        "use or invent external facts. If the supplied evidence "
+                        "is insufficient, state the limitation."
                     ),
                     error_message="Invalid enrichment artifact",
                     validator=validate_required_blocks,

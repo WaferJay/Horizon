@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,7 +18,7 @@ from src.models import (
     SourceType,
 )
 from src.processing import ProfileRegistry
-from src.processing.tools import ToolResult
+from src.processing.tools import ToolInputError, ToolResult, WebSearchTool
 
 
 PROFILES = ProfileRegistry.load(
@@ -67,6 +68,50 @@ class FakeTools:
                 }
             ],
         )
+
+
+class RecordingTools:
+    names = {"web_search"}
+
+    def __init__(self, *, results=None, error=None):
+        self.calls = []
+        self.results = [] if results is None else results
+        self.error = error
+
+    async def execute(self, request_id, block_id, tool, arguments):
+        self.calls.append(
+            {
+                "request_id": request_id,
+                "block_id": block_id,
+                "tool": tool,
+                "arguments": arguments,
+            }
+        )
+        if self.error:
+            raise self.error
+        return ToolResult(
+            request_id=request_id,
+            block_id=block_id,
+            tool=tool,
+            results=self.results,
+        )
+
+
+def artifact_response(block_ids, title="Article update"):
+    return json.dumps(
+        {
+            "title": title,
+            "blocks": [
+                {
+                    "id": block_id,
+                    "title": block_id.replace("_", " ").title(),
+                    "content": f"Supported content for {block_id}.",
+                    "source_refs": [],
+                }
+                for block_id in block_ids
+            ],
+        }
+    )
 
 
 def test_enrichment_generates_blocks_and_validated_sources():
@@ -168,45 +213,160 @@ def test_enrichment_generates_blocks_and_validated_sources():
     assert "https://docs.example.com/project" in requests[3]["user"]
 
 
-def test_enrichment_rejects_tool_on_unapproved_block():
+def test_enrichment_repairs_disallowed_tool_request_and_continues(caplog):
+    required_blocks = (
+        "summary",
+        "background",
+        "key_actors",
+        "domestic_context",
+        "international_impact",
+        "uncertainty",
+    )
+    responses = iter(
+        [
+            json.dumps(
+                {
+                    "tool_requests": [
+                        {
+                            "block_id": "key_actors",
+                            "tool": "web_search",
+                            "arguments": {"query": "unapproved"},
+                            "purpose": "Research the actors",
+                        }
+                    ]
+                }
+            ),
+            json.dumps({"tool_requests": []}),
+            artifact_response(required_blocks, "International update"),
+        ]
+    )
+    requests = []
+
     async def complete(**kwargs):
-        return json.dumps(
-            {
-                "tool_requests": [
-                    {
-                        "block_id": "summary",
-                        "tool": "web_search",
-                        "arguments": {"query": "unapproved"},
-                        "purpose": "Rewrite the news",
-                    }
-                ]
-            }
+        requests.append(kwargs)
+        return next(responses)
+
+    tools = RecordingTools()
+    enricher = ContentEnricher(
+        SimpleNamespace(complete=complete),
+        PROFILES,
+        ["en"],
+        tools=tools,
+    )
+    item = make_item()
+    item.profile = "international-news"
+    item.processing.classification.profile = "international-news"
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(enricher._enrich_item(item))
+
+    assert tools.calls == []
+    assert len(requests) == 3
+    assert "not allowed for block key_actors" in requests[1]["user"]
+    assert "No tool results are available" in requests[2]["user"]
+    assert "Do not retry tool use" in requests[2]["user"]
+    assert [
+        block.id for block in item.processing.artifacts["en"].blocks
+    ] == list(required_blocks)
+    assert "requesting one correction" in caplog.text
+
+
+def test_enrichment_keeps_valid_requests_from_mixed_corrected_plan(caplog):
+    responses = iter(
+        [
+            json.dumps(
+                {
+                    "tool_requests": [
+                        {
+                            "block_id": "key_actors",
+                            "tool": "web_search",
+                            "arguments": {"query": "actors"},
+                            "purpose": "Research the actors",
+                        }
+                    ]
+                }
+            ),
+            json.dumps(
+                {
+                    "tool_requests": [
+                        {
+                            "block_id": "background",
+                            "tool": "web_search",
+                            "arguments": {"query": "project architecture"},
+                            "purpose": "Research background",
+                        },
+                        {
+                            "block_id": "key_actors",
+                            "tool": "web_search",
+                            "arguments": {"query": "actors"},
+                            "purpose": "Research the actors",
+                        },
+                        {
+                            "block_id": "unknown_block",
+                            "tool": "web_search",
+                            "arguments": {"query": "unknown"},
+                            "purpose": "Research an unknown block",
+                        },
+                    ]
+                }
+            ),
+        ]
+    )
+
+    async def complete(**kwargs):
+        return next(responses)
+
+    tools = RecordingTools()
+    enricher = ContentEnricher(
+        SimpleNamespace(complete=complete),
+        PROFILES,
+        ["en"],
+        tools=tools,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        results = asyncio.run(
+            enricher._plan_and_execute_tools(
+                make_item(),
+                PROFILES.get("international-news"),
+            )
         )
 
-    enricher = ContentEnricher(
-        SimpleNamespace(complete=complete),
-        PROFILES,
-        ["zh"],
-        tools=FakeTools(),
+    assert [result.block_id for result in results] == ["background"]
+    assert [call["block_id"] for call in tools.calls] == ["background"]
+    assert "Ignoring invalid enrichment tool request" in caplog.text
+    assert "unknown block unknown_block" in caplog.text
+
+
+def test_enrichment_falls_back_when_tool_plan_remains_malformed(caplog):
+    responses = iter(
+        [
+            "[]",
+            "[]",
+            "[]",
+            artifact_response(("summary", "background")),
+        ]
     )
+    requests = []
 
-    with pytest.raises(ValueError, match="not allowed"):
-        asyncio.run(enricher._enrich_item(make_item()))
-
-
-def test_enrichment_rejects_malformed_tool_plan():
     async def complete(**kwargs):
-        return "[]"
+        requests.append(kwargs)
+        return next(responses)
 
     enricher = ContentEnricher(
         SimpleNamespace(complete=complete),
         PROFILES,
-        ["zh"],
+        ["en"],
         tools=FakeTools(),
     )
 
-    with pytest.raises(ValueError, match="tool plan"):
-        asyncio.run(enricher._enrich_item(make_item()))
+    with caplog.at_level(logging.WARNING):
+        item = make_item()
+        asyncio.run(enricher._enrich_item(item))
+
+    assert len(requests) == 4
+    assert item.processing.artifacts["en"].title == "Article update"
+    assert "continuing without tools" in caplog.text
 
 
 def test_enrichment_repairs_malformed_tool_plan_once():
@@ -257,6 +417,130 @@ def test_enrichment_repairs_malformed_tool_plan_once():
     assert all(request["temperature"] == 0 for request in requests)
     assert requests[1]["temperature"] == 0
     assert item.processing.artifacts["en"].blocks[0].id == "summary"
+
+
+def test_enrichment_ignores_invalid_tool_arguments(caplog):
+    async def complete(**kwargs):
+        return json.dumps(
+            {
+                "tool_requests": [
+                    {
+                        "block_id": "background",
+                        "tool": "web_search",
+                        "arguments": {"query": ""},
+                        "purpose": "Research background",
+                    }
+                ]
+            }
+        )
+
+    tools = RecordingTools(
+        error=ToolInputError("web_search requires a non-empty query")
+    )
+    enricher = ContentEnricher(
+        SimpleNamespace(complete=complete),
+        PROFILES,
+        ["en"],
+        tools=tools,
+    )
+
+    with caplog.at_level(logging.WARNING):
+        results = asyncio.run(
+            enricher._plan_and_execute_tools(
+                make_item(),
+                PROFILES.get("tech-news"),
+            )
+        )
+
+    assert results == []
+    assert len(tools.calls) == 1
+    assert "Ignoring invalid arguments" in caplog.text
+
+
+def test_web_search_uses_recoverable_error_for_invalid_arguments():
+    with pytest.raises(ToolInputError, match="non-empty query"):
+        asyncio.run(WebSearchTool().execute({"query": " "}))
+
+
+def test_enrichment_does_not_hide_unexpected_tool_errors():
+    async def complete(**kwargs):
+        return json.dumps(
+            {
+                "tool_requests": [
+                    {
+                        "block_id": "background",
+                        "tool": "web_search",
+                        "arguments": {"query": "project architecture"},
+                        "purpose": "Research background",
+                    }
+                ]
+            }
+        )
+
+    enricher = ContentEnricher(
+        SimpleNamespace(complete=complete),
+        PROFILES,
+        ["en"],
+        tools=RecordingTools(error=RuntimeError("tool implementation failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="tool implementation failed"):
+        asyncio.run(
+            enricher._plan_and_execute_tools(
+                make_item(),
+                PROFILES.get("tech-news"),
+            )
+        )
+
+
+def test_enrichment_explains_empty_tool_results_to_block_model():
+    responses = iter(
+        [
+            json.dumps(
+                {
+                    "tool_requests": [
+                        {
+                            "block_id": "background",
+                            "tool": "web_search",
+                            "arguments": {"query": "project architecture"},
+                            "purpose": "Research background",
+                        }
+                    ]
+                }
+            ),
+            artifact_response(("summary",)),
+            json.dumps(
+                {
+                    "title": "",
+                    "block": {
+                        "id": "background",
+                        "title": "Background",
+                        "content": "The source provides limited background.",
+                        "source_refs": [],
+                    },
+                }
+            ),
+        ]
+    )
+    requests = []
+
+    async def complete(**kwargs):
+        requests.append(kwargs)
+        return next(responses)
+
+    item = make_item()
+    enricher = ContentEnricher(
+        SimpleNamespace(complete=complete),
+        PROFILES,
+        ["en"],
+        tools=RecordingTools(results=[]),
+    )
+
+    asyncio.run(enricher._enrich_item(item))
+
+    assert "No results were returned by this tool request" in requests[2]["user"]
+    assert "do not invent external facts" in requests[2]["user"]
+    assert item.processing.artifacts["en"].sources == []
 
 
 def test_enrichment_json_repair_includes_error_and_previous_response():

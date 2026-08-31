@@ -178,6 +178,14 @@ def tool_results_text(results: list[ToolResult]) -> str:
         return "No tool results were requested."
     sections = []
     for result in results:
+        if not result.results:
+            sections.append(
+                f"## {result.request_id} for block {result.block_id}\n"
+                "No results were returned by this tool request. Use only the "
+                "source item and supplied analysis; do not invent external facts. "
+                "If the supplied evidence is insufficient, state the limitation."
+            )
+            continue
         lines = [
             f"- `{result.request_id}-{index}` "
             f"[{entry['title']}]({entry['url']}): {entry['text']}"

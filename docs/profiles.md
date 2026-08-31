@@ -274,7 +274,14 @@ Unknown tools are rejected when profiles are initialized.
 
 Tool planning receives each block's required or optional status. For required
 blocks with tools, it uses a tool unless the source already provides enough
-evidence; tool failures do not make the block optional.
+evidence. A model-generated request that violates a block's tool allowlist is
+returned to the model for one correction attempt. Any remaining invalid request
+is logged and ignored, while valid requests in the same plan continue normally.
+
+Invalid tool plans, invalid tool arguments, and search failures fall back to
+source-only enrichment instead of discarding the item. Tool failures do not make
+a required block optional. Unexpected implementation errors are still reported
+as enrichment failures.
 
 ## Content Selection
 
