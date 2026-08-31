@@ -138,24 +138,42 @@ class RSSScraper(BaseScraper):
         return items
 
     def _entry_url(self, entry: dict, feed_url: str) -> str:
-        """Return an absolute article URL for an RSS or Atom entry."""
-        link = str(entry.get("link") or "")
-        if urlparse(link).scheme in {"http", "https"}:
-            return link
+        """Return an absolute article URL using Atom link-relation semantics."""
+        links = entry.get("links", [])
 
-        # Some generated Atom feeds publish a local archive path as the
-        # alternate link and preserve the canonical article as rel="via".
-        # Prefer that canonical absolute URL before resolving a relative path
-        # against the feed endpoint.
-        for candidate in entry.get("links", []):
-            href = str(candidate.get("href") or "")
-            if (
-                candidate.get("rel") == "via"
-                and urlparse(href).scheme in {"http", "https"}
-            ):
-                return href
+        # An omitted rel is equivalent to rel="alternate" in Atom. Prefer an
+        # HTML representation, but retain document order within each group.
+        for relation in ("alternate", "via"):
+            candidates = [
+                candidate
+                for candidate in links
+                if str(candidate.get("rel") or "alternate").lower() == relation
+            ]
+            candidates.sort(key=self._link_media_priority)
+            for candidate in candidates:
+                resolved = self._resolve_http_link(candidate.get("href"), feed_url)
+                if resolved:
+                    return resolved
 
-        return urljoin(feed_url, link) if link else feed_url
+        # RSS parsers and non-conforming feeds may expose only the convenience
+        # `link` field without a corresponding relation entry.
+        resolved = self._resolve_http_link(entry.get("link"), feed_url)
+        return resolved or feed_url
+
+    @staticmethod
+    def _link_media_priority(link: dict) -> int:
+        """Prefer browser-readable alternate representations."""
+        media_type = str(link.get("type") or "").split(";", 1)[0].strip().lower()
+        return 0 if media_type in {"text/html", "application/xhtml+xml"} else 1
+
+    @staticmethod
+    def _resolve_http_link(href: object, base_url: str) -> str:
+        """Resolve an IRI reference and accept only fetchable HTTP(S) URLs."""
+        value = str(href or "").strip()
+        if not value:
+            return ""
+        resolved = urljoin(base_url, value)
+        return resolved if urlparse(resolved).scheme in {"http", "https"} else ""
 
     def _parse_date(self, entry: dict) -> datetime:
         """Parse publication date from feed entry.

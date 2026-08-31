@@ -61,7 +61,7 @@ def test_rss_ids_are_deterministic() -> None:
     assert first_item.profile == "rss-profile"
 
 
-def test_relative_atom_link_uses_absolute_via_url() -> None:
+def test_relative_atom_alternate_is_resolved_before_via() -> None:
     client = _make_feed_client(_ATOM_WITH_RELATIVE_LINK)
     source = RSSSourceConfig(
         name="Generated Atom",
@@ -71,7 +71,65 @@ def test_relative_atom_link_uses_absolute_via_url() -> None:
     items = asyncio.run(RSSScraper([source], client).fetch(_SINCE))
 
     assert len(items) == 1
-    assert str(items[0].url) == "https://example.com/item-1"
+    assert str(items[0].url) == "https://raw.example.com/pages/example.com/item-1.html"
+
+
+def test_html_alternate_is_preferred_over_other_alternate_types() -> None:
+    entry = {
+        "links": [
+            {
+                "rel": "alternate",
+                "type": "application/json",
+                "href": "item.json",
+            },
+            {
+                "rel": "alternate",
+                "type": "text/html; charset=utf-8",
+                "href": "item.html",
+            },
+            {
+                "rel": "via",
+                "type": "text/html",
+                "href": "https://origin.example.com/item",
+            },
+        ]
+    }
+
+    result = RSSScraper([], AsyncMock())._entry_url(
+        entry, "https://feed.example.com/atom.xml"
+    )
+
+    assert result == "https://feed.example.com/item.html"
+
+
+def test_via_is_used_only_when_no_fetchable_alternate_exists() -> None:
+    entry = {
+        "links": [
+            {"rel": "alternate", "href": "mailto:editor@example.com"},
+            {"rel": "via", "href": "https://origin.example.com/item"},
+        ]
+    }
+
+    result = RSSScraper([], AsyncMock())._entry_url(
+        entry, "https://feed.example.com/atom.xml"
+    )
+
+    assert result == "https://origin.example.com/item"
+
+
+def test_missing_relation_is_treated_as_alternate() -> None:
+    entry = {
+        "links": [
+            {"href": "/article"},
+            {"rel": "via", "href": "https://origin.example.com/item"},
+        ]
+    }
+
+    result = RSSScraper([], AsyncMock())._entry_url(
+        entry, "https://feed.example.com/atom.xml"
+    )
+
+    assert result == "https://feed.example.com/article"
 
 
 def _make_registry(name: str, extractor):
