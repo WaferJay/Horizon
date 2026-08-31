@@ -206,6 +206,7 @@ class AIConfig(BaseModel):
     throttle_sec: float = 0.0
     analysis_concurrency: int = 1
     enrichment_concurrency: int = 1
+    secondary_concurrency: int = Field(default=2, ge=1)
     languages: List[str] = Field(default_factory=lambda: ["en"])
     # Azure OpenAI specific; required when provider == AZURE
     azure_endpoint_env: Optional[str] = None

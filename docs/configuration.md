@@ -322,20 +322,24 @@ If your model has a strict per-minute request cap, you can slow the scorer down 
 
 ### AI Concurrency
 
-By default, AI scoring and enrichment run one item at a time. If your API endpoint supports concurrent requests, you can increase throughput:
+By default, AI scoring and enrichment run one item at a time, while secondary-
+brief localization runs two items at a time. If your API endpoint supports
+concurrent requests, you can adjust their throughput independently:
 
 ```json
 {
   "ai": {
     "analysis_concurrency": 4,
-    "enrichment_concurrency": 2
+    "enrichment_concurrency": 2,
+    "secondary_concurrency": 2
   }
 }
 ```
 
 - `analysis_concurrency`: Number of items scored in parallel. Default is `1`.
 - `enrichment_concurrency`: Number of high-scoring items enriched in parallel. Default is `1`.
-- Both values are clamped to a minimum of `1`.
+- `secondary_concurrency`: Number of secondary-brief items localized in parallel. Default is `2`.
+- All three values must be at least `1`.
 - Preserve the existing retry behavior per item.
 - Result ordering is preserved regardless of concurrency.
 - If you also use `throttle_sec`, each concurrent task sleeps independently after finishing an item.

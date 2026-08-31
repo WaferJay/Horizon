@@ -731,6 +731,7 @@ def _create_chained_client(config: AIConfig) -> ChainedAIClient:
             throttle_sec=config.throttle_sec,
             analysis_concurrency=config.analysis_concurrency,
             enrichment_concurrency=config.enrichment_concurrency,
+            secondary_concurrency=config.secondary_concurrency,
             connect_timeout_sec=config.connect_timeout_sec,
             read_timeout_sec=config.read_timeout_sec,
             write_timeout_sec=config.write_timeout_sec,

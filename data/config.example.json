@@ -10,7 +10,8 @@
     "write_timeout_sec": 60,
     "throttle_sec": 0,
     "analysis_concurrency": 1,
-    "enrichment_concurrency": 1
+    "enrichment_concurrency": 1,
+    "secondary_concurrency": 2
   },
   "processing": {
     "profiles_dir": "profiles",

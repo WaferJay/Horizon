@@ -47,6 +47,19 @@ def _make_config(provider: AIProvider, model: str = "m", api_key_env: str = "K")
     )
 
 
+def test_secondary_concurrency_defaults_to_two_and_requires_positive_value():
+    assert _make_config(AIProvider.OPENAI).secondary_concurrency == 2
+
+    for invalid in (0, -1):
+        with pytest.raises(ValueError):
+            AIConfig(
+                provider=AIProvider.OPENAI,
+                model="m",
+                api_key_env="K",
+                secondary_concurrency=invalid,
+            )
+
+
 def test_success_on_first_provider():
     """When first provider succeeds, no fallback occurs."""
     cfg1 = _make_config(AIProvider.OPENAI)
@@ -189,6 +202,7 @@ def test_create_chained_client_uses_provider_defaults_without_leaking_base_url()
         throttle_sec=0.75,
         analysis_concurrency=3,
         enrichment_concurrency=5,
+        secondary_concurrency=7,
         languages=["en", "zh-CN"],
     )
 
@@ -210,6 +224,7 @@ def test_create_chained_client_uses_provider_defaults_without_leaking_base_url()
         assert entry.throttle_sec == config.throttle_sec
         assert entry.analysis_concurrency == config.analysis_concurrency
         assert entry.enrichment_concurrency == config.enrichment_concurrency
+        assert entry.secondary_concurrency == config.secondary_concurrency
         assert entry.languages == config.languages
 
 
@@ -227,6 +242,7 @@ def test_create_chained_client_preserves_custom_azure_and_common_settings():
         throttle_sec=1.25,
         analysis_concurrency=4,
         enrichment_concurrency=6,
+        secondary_concurrency=8,
         languages=["ja", "en-US"],
     )
 
@@ -242,6 +258,7 @@ def test_create_chained_client_preserves_custom_azure_and_common_settings():
         assert entry.throttle_sec == 1.25
         assert entry.analysis_concurrency == 4
         assert entry.enrichment_concurrency == 6
+        assert entry.secondary_concurrency == 8
         assert entry.languages == ["ja", "en-US"]
 
 

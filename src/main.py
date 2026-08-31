@@ -148,7 +148,8 @@ def print_config_template():
     "max_tokens": 4096,
     "connect_timeout_sec": 10,
     "read_timeout_sec": 300,
-    "write_timeout_sec": 60
+    "write_timeout_sec": 60,
+    "secondary_concurrency": 2
   },
   "display": {
     "icon_style": "emoji"
