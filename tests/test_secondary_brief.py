@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from src.ai.secondary_brief import SecondaryBriefGenerator
 from src.debug import DebugStore, RecordingAIClient
 from src.models import (
+    AIStage,
     ClassificationResult,
     ContentAnalysis,
     ContentItem,
@@ -87,7 +88,7 @@ def test_selector_reuses_topic_dedup_and_records_dropped_secondary_ids():
 
 def test_service_always_saves_standalone_and_optionally_appends(tmp_path: Path):
     class FakeClient:
-        async def complete(self, *, system, user):
+        async def complete(self, *, system, user, **kwargs):
             return '{"title":"Short title","summary":"Short summary"}'
 
     class Storage:
@@ -138,7 +139,7 @@ def test_generator_sends_one_id_free_prompt_per_item_and_associates_results():
         def __init__(self):
             self.calls = []
 
-        async def complete(self, *, system, user):
+        async def complete(self, *, system, user, **kwargs):
             self.calls.append((system, user))
             if "Alpha headline" in user:
                 await asyncio.sleep(0.01)
@@ -210,6 +211,9 @@ def test_generator_repairs_invalid_json_and_stops_after_three_attempts():
 
     assert generated == {}
     assert len(client.calls) == 3
+    assert all(
+        call["stage"] == AIStage.SECONDARY_BRIEF for call in client.calls
+    )
     assert "previous response did not satisfy" not in client.calls[0]["user"]
     for call in client.calls[1:]:
         assert call["temperature"] == 0

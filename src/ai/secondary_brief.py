@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from ..debug.context import debug_scope
-from ..models import ContentItem
+from ..models import AIStage, ContentItem
 from .client import AIClient
 from .utils import parse_json_response_with_error
 
@@ -120,6 +120,7 @@ class SecondaryBriefGenerator:
         **kwargs: Any,
     ) -> str:
         async with semaphore:
+            kwargs.setdefault("stage", AIStage.SECONDARY_BRIEF)
             return await self.client.complete(**kwargs)
 
     @staticmethod

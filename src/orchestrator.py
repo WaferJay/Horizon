@@ -20,7 +20,7 @@ from .debug import (
     debug_scope,
     make_http_event_hooks,
 )
-from .models import Config, ContentItem
+from .models import AIStage, Config, ContentItem
 from .storage.manager import StorageManager, safe_output_path
 from .services.email import EmailManager
 from .services.webhook import WebhookNotifier
@@ -840,6 +840,7 @@ class HorizonOrchestrator:
                 response = await ai_client.complete(
                     system=TOPIC_DEDUP_SYSTEM,
                     user=TOPIC_DEDUP_USER.format(items=items_text),
+                    stage=AIStage.TOPIC_DEDUP,
                 )
             result = parse_json_response(response)
             if result is None:

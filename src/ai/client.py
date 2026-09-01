@@ -13,7 +13,7 @@ from google.genai import types
 
 import logging
 
-from ..models import AIConfig, AIProvider, AI_PROVIDER_DEFAULTS
+from ..models import AIConfig, AIProvider, AIStage, AI_PROVIDER_DEFAULTS
 from .tokens import record_usage
 
 logger = logging.getLogger(__name__)
@@ -133,6 +133,19 @@ def _seconds_to_milliseconds(seconds: float) -> int:
     return max(1, int(round(seconds * 1000)))
 
 
+def _stage_extra_body(
+    config: AIConfig,
+    stage: Optional[AIStage],
+) -> Optional[Dict[str, Any]]:
+    """Return a detached provider-specific body for one configured stage."""
+    if stage is None:
+        return None
+    options = config.stage_options.get(stage)
+    if options is None or not options.extra_body:
+        return None
+    return dict(options.extra_body)
+
+
 class AIClient(ABC):
     """Abstract base class for AI clients."""
 
@@ -143,6 +156,8 @@ class AIClient(ABC):
         user: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        *,
+        stage: Optional[AIStage] = None,
     ) -> str:
         """Generate completion from AI model.
 
@@ -151,6 +166,7 @@ class AIClient(ABC):
             user: User prompt
             temperature: Optional sampling temperature override
             max_tokens: Optional maximum tokens override
+            stage: Optional pipeline stage used to select provider extensions
 
         Returns:
             str: Generated completion text
@@ -189,6 +205,8 @@ class AnthropicClient(AIClient):
         user: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        *,
+        stage: Optional[AIStage] = None,
     ) -> str:
         """Generate completion using Claude.
 
@@ -197,6 +215,7 @@ class AnthropicClient(AIClient):
             user: User prompt
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            stage: Pipeline stage; native Anthropic requests do not use extensions
 
         Returns:
             str: Generated text
@@ -295,6 +314,8 @@ class OpenAIClient(AIClient):
         user: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        *,
+        stage: Optional[AIStage] = None,
     ) -> str:
         """Generate completion using OpenAI-compatible API.
 
@@ -303,12 +324,14 @@ class OpenAIClient(AIClient):
             user: User prompt
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            stage: Pipeline stage used to select provider extensions
 
         Returns:
             str: Generated text
         """
         temperature = self.temperature if temperature is None else temperature
         max_tokens = self.max_tokens if max_tokens is None else max_tokens
+        extra_body = _stage_extra_body(self.config, stage)
 
         # Clamp temperature for providers that require it
         if self.provider in self._TEMP_CLAMP and temperature <= 0:
@@ -320,6 +343,7 @@ class OpenAIClient(AIClient):
                 user=user,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                extra_body=extra_body,
                 include_temperature=self._supports_temperature,
                 use_max_completion_tokens=self._use_max_completion_tokens,
             )
@@ -331,6 +355,7 @@ class OpenAIClient(AIClient):
                     user=user,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    extra_body=extra_body,
                     include_temperature=False,
                     use_max_completion_tokens=self._use_max_completion_tokens,
                 )
@@ -341,6 +366,7 @@ class OpenAIClient(AIClient):
                     user=user,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    extra_body=extra_body,
                     include_temperature=self._supports_temperature,
                     use_max_completion_tokens=True,
                 )
@@ -362,6 +388,7 @@ class OpenAIClient(AIClient):
         user: str,
         temperature: float,
         max_tokens: int,
+        extra_body: Optional[Dict[str, Any]],
         include_temperature: bool,
         use_max_completion_tokens: bool,
     ):
@@ -378,6 +405,8 @@ class OpenAIClient(AIClient):
             request_kwargs["temperature"] = temperature
         if self.provider not in self._NO_RESPONSE_FORMAT:
             request_kwargs["response_format"] = {"type": "json_object"}
+        if extra_body:
+            request_kwargs["extra_body"] = extra_body
         return await self.client.chat.completions.create(**request_kwargs)
 
     @staticmethod
@@ -448,6 +477,8 @@ class AzureOpenAIClient(AIClient):
         user: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        *,
+        stage: Optional[AIStage] = None,
     ) -> str:
         """Generate completion using Azure OpenAI.
 
@@ -456,12 +487,14 @@ class AzureOpenAIClient(AIClient):
             user: User prompt
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            stage: Pipeline stage used to select provider extensions
 
         Returns:
             str: Generated text
         """
         temperature = self.temperature if temperature is None else temperature
         max_tokens = self.max_tokens if max_tokens is None else max_tokens
+        extra_body = _stage_extra_body(self.config, stage)
 
         try:
             response = await self._create_completion(
@@ -469,6 +502,7 @@ class AzureOpenAIClient(AIClient):
                 user=user,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                extra_body=extra_body,
                 use_max_completion_tokens=self._use_max_completion_tokens,
             )
         except Exception as exc:
@@ -482,6 +516,7 @@ class AzureOpenAIClient(AIClient):
                 user=user,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                extra_body=extra_body,
                 use_max_completion_tokens=fallback,
             )
 
@@ -501,6 +536,7 @@ class AzureOpenAIClient(AIClient):
         user: str,
         temperature: float,
         max_tokens: int,
+        extra_body: Optional[Dict[str, Any]],
         use_max_completion_tokens: bool,
     ):
         tokens_kwarg = (
@@ -508,7 +544,7 @@ class AzureOpenAIClient(AIClient):
             if use_max_completion_tokens
             else {"max_tokens": max_tokens}
         )
-        return await self.client.chat.completions.create(
+        request_kwargs = dict(
             model=self.model,
             messages=[
                 {"role": "system", "content": system},
@@ -518,6 +554,9 @@ class AzureOpenAIClient(AIClient):
             response_format={"type": "json_object"},
             **tokens_kwarg,
         )
+        if extra_body:
+            request_kwargs["extra_body"] = extra_body
+        return await self.client.chat.completions.create(**request_kwargs)
 
     @staticmethod
     def _token_fallback_mode(message: str) -> Optional[bool]:
@@ -570,6 +609,8 @@ class GeminiClient(AIClient):
         user: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        *,
+        stage: Optional[AIStage] = None,
     ) -> str:
         """Generate completion using Gemini.
 
@@ -578,6 +619,7 @@ class GeminiClient(AIClient):
             user: User prompt
             temperature: Sampling temperature
             max_tokens: Maximum tokens to generate
+            stage: Pipeline stage; native Gemini requests do not use extensions
 
         Returns:
             str: Generated text
@@ -670,12 +712,20 @@ class ChainedAIClient(AIClient):
         user: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        *,
+        stage: Optional[AIStage] = None,
     ) -> str:
         last_error: Optional[Exception] = None
         for i in range(len(self.configs)):
             try:
                 client = self._get_client(i)
-                result = await client.complete(system, user, temperature, max_tokens)
+                result = await client.complete(
+                    system,
+                    user,
+                    temperature,
+                    max_tokens,
+                    stage=stage,
+                )
                 if not result or not result.strip():
                     raise ValueError("Empty response from provider")
                 return result
@@ -732,6 +782,9 @@ def _create_chained_client(config: AIConfig) -> ChainedAIClient:
             analysis_concurrency=config.analysis_concurrency,
             enrichment_concurrency=config.enrichment_concurrency,
             secondary_concurrency=config.secondary_concurrency,
+            stage_options=(
+                config.stage_options if provider == config.provider else {}
+            ),
             connect_timeout_sec=config.connect_timeout_sec,
             read_timeout_sec=config.read_timeout_sec,
             write_timeout_sec=config.write_timeout_sec,

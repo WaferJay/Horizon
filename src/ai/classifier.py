@@ -10,7 +10,7 @@ from .prompting.classification import (
     classification_user_prompt,
 )
 from .utils import parse_json_response
-from ..models import ClassificationResult, ContentItem, ProcessingResult
+from ..models import AIStage, ClassificationResult, ContentItem, ProcessingResult
 from ..processing.profiles import LoadedProfile, ProfileRegistry
 
 logger = logging.getLogger(__name__)
@@ -119,6 +119,7 @@ class ContentClassifier:
         response = await self.client.complete(
             system=classification_system_prompt(),
             user=classification_user_prompt(item, self.profiles, candidate_ids),
+            stage=AIStage.CLASSIFICATION,
         )
         parsed = parse_json_response(response)
         if not isinstance(parsed, dict):

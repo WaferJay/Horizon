@@ -17,8 +17,16 @@ class _DummyClient:
         self.exc = exc
         self.calls = []
 
-    async def complete(self, system, user, temperature=None, max_tokens=None):
-        self.calls.append((system, user, temperature, max_tokens))
+    async def complete(
+        self,
+        system,
+        user,
+        temperature=None,
+        max_tokens=None,
+        *,
+        stage=None,
+    ):
+        self.calls.append((system, user, temperature, max_tokens, stage))
         if self.exc:
             raise self.exc
         return self.result

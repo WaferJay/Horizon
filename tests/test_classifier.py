@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from src.ai.classifier import ContentClassifier
 from src.models import (
+    AIStage,
     ClassificationResult,
     ContentAnalysis,
     ContentArtifact,
@@ -136,6 +137,7 @@ def test_candidate_profiles_restrict_ai_catalog():
     assert "## tech-news:" in requests[0]["user"]
     assert "## finance-news:" in requests[0]["user"]
     assert "## tech-blog:" not in requests[0]["user"]
+    assert requests[0]["stage"] == AIStage.CLASSIFICATION
 
 
 def test_candidate_classification_failure_falls_back_within_candidates():

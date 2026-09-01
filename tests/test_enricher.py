@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ import pytest
 
 from src.ai.enricher import ContentEnricher, ToolPlan
 from src.models import (
+    AIStage,
     ClassificationResult,
     ContentAnalysis,
     ContentArtifact,
@@ -24,6 +26,29 @@ from src.processing.tools import ToolInputError, ToolResult, WebSearchTool
 PROFILES = ProfileRegistry.load(
     Path(__file__).resolve().parents[1] / "profiles", "tech-news"
 )
+
+
+def _profiles_with_international_background_search() -> ProfileRegistry:
+    """Build the mixed-permission profile required by tool-validation tests."""
+    international = PROFILES.get("international-news")
+    blocks = [
+        block.model_copy(update={"tools": ["web_search"]})
+        if block.id == "background"
+        else block
+        for block in international.definition.enrichment.blocks
+    ]
+    enrichment = international.definition.enrichment.model_copy(
+        update={"blocks": blocks}
+    )
+    definition = international.definition.model_copy(
+        update={"enrichment": enrichment}
+    )
+    profiles = {profile.id: profile for profile in PROFILES.profiles}
+    profiles[international.id] = replace(international, definition=definition)
+    return ProfileRegistry(profiles, PROFILES.default_profile)
+
+
+INTERNATIONAL_TOOL_PROFILES = _profiles_with_international_background_search()
 
 
 def make_item() -> ContentItem:
@@ -249,7 +274,7 @@ def test_enrichment_repairs_disallowed_tool_request_and_continues(caplog):
     tools = RecordingTools()
     enricher = ContentEnricher(
         SimpleNamespace(complete=complete),
-        PROFILES,
+        INTERNATIONAL_TOOL_PROFILES,
         ["en"],
         tools=tools,
     )
@@ -319,7 +344,7 @@ def test_enrichment_keeps_valid_requests_from_mixed_corrected_plan(caplog):
     tools = RecordingTools()
     enricher = ContentEnricher(
         SimpleNamespace(complete=complete),
-        PROFILES,
+        INTERNATIONAL_TOOL_PROFILES,
         ["en"],
         tools=tools,
     )
@@ -328,7 +353,7 @@ def test_enrichment_keeps_valid_requests_from_mixed_corrected_plan(caplog):
         results = asyncio.run(
             enricher._plan_and_execute_tools(
                 make_item(),
-                PROFILES.get("international-news"),
+                INTERNATIONAL_TOOL_PROFILES.get("international-news"),
             )
         )
 
@@ -415,6 +440,7 @@ def test_enrichment_repairs_malformed_tool_plan_once():
 
     assert len(requests) == 3
     assert all(request["temperature"] == 0 for request in requests)
+    assert all(request["stage"] == AIStage.ENRICHMENT for request in requests)
     assert requests[1]["temperature"] == 0
     assert item.processing.artifacts["en"].blocks[0].id == "summary"
 

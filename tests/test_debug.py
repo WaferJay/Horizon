@@ -17,7 +17,7 @@ from src.debug import (
     make_http_event_hooks,
 )
 from src.extractors.base import BaseExtractor
-from src.models import ContentItem, SourceType
+from src.models import AIStage, ContentItem, SourceType
 from src.processing.tools import ToolResult
 
 
@@ -123,7 +123,11 @@ def test_recording_adapters_preserve_results_and_context(tmp_path):
         config = SimpleNamespace(provider="llama.cpp")
         model = "test-model"
 
+        def __init__(self):
+            self.calls = []
+
         async def complete(self, **kwargs):
+            self.calls.append(kwargs)
             return "response"
 
     class FakeTools:
@@ -142,11 +146,15 @@ def test_recording_adapters_preserve_results_and_context(tmp_path):
             return "article text"
 
     async def exercise():
+        fake_ai = FakeAI()
         with debug_scope(stage="analysis", item_id="item-1", attempt=1):
-            response = await RecordingAIClient(FakeAI(), store).complete(
-                system="system", user="user"
+            response = await RecordingAIClient(fake_ai, store).complete(
+                system="system",
+                user="user",
+                stage=AIStage.ANALYSIS,
             )
         assert response == "response"
+        assert fake_ai.calls[0]["stage"] == AIStage.ANALYSIS
 
         with debug_scope(stage="enrichment", item_id="item-1", language="zh"):
             result = await RecordingToolRegistry(FakeTools(), store).execute(

@@ -2,9 +2,18 @@
 
 from datetime import datetime, timezone
 from enum import Enum
+import json
 import re
 from typing import Annotated, Literal, Optional, List, Dict, Any, NamedTuple, Union
-from pydantic import BaseModel, ConfigDict, HttpUrl, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
 
 class SourceType(str, Enum):
@@ -132,6 +141,53 @@ class AIProvider(str, Enum):
     OLLAMA = "ollama"
 
 
+class AIStage(str, Enum):
+    """Stable AI pipeline stages that may carry provider-specific options."""
+
+    CLASSIFICATION = "classification"
+    ANALYSIS = "analysis"
+    TOPIC_DEDUP = "topic_dedup"
+    ENRICHMENT = "enrichment"
+    SECONDARY_BRIEF = "secondary_brief"
+
+
+_RESERVED_AI_EXTRA_BODY_FIELDS = {
+    "model",
+    "messages",
+    "temperature",
+    "max_tokens",
+    "max_completion_tokens",
+    "response_format",
+}
+
+
+class AIStageOptions(BaseModel):
+    """Provider-specific request fields applied to one AI pipeline stage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    extra_body: Dict[str, JsonValue] = Field(default_factory=dict)
+
+    @field_validator("extra_body")
+    @classmethod
+    def validate_extra_body(
+        cls, extra_body: Dict[str, JsonValue]
+    ) -> Dict[str, JsonValue]:
+        try:
+            json.dumps(extra_body, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "ai.stage_options extra_body must contain valid JSON values"
+            ) from exc
+        reserved = sorted(_RESERVED_AI_EXTRA_BODY_FIELDS.intersection(extra_body))
+        if reserved:
+            raise ValueError(
+                "ai.stage_options extra_body cannot override Horizon-managed "
+                f"fields: {', '.join(reserved)}"
+            )
+        return extra_body
+
+
 # Provider-specific defaults used by setup and provider-chain expansion.
 AI_PROVIDER_DEFAULTS = {
     AIProvider.ANTHROPIC: {
@@ -207,6 +263,7 @@ class AIConfig(BaseModel):
     analysis_concurrency: int = 1
     enrichment_concurrency: int = 1
     secondary_concurrency: int = Field(default=2, ge=1)
+    stage_options: Dict[AIStage, AIStageOptions] = Field(default_factory=dict)
     languages: List[str] = Field(default_factory=lambda: ["en"])
     # Azure OpenAI specific; required when provider == AZURE
     azure_endpoint_env: Optional[str] = None
@@ -221,6 +278,21 @@ class AIConfig(BaseModel):
         if invalid:
             raise ValueError(f"invalid language code: {invalid[0]!r}")
         return languages
+
+    @model_validator(mode="after")
+    def validate_stage_options_provider(self) -> "AIConfig":
+        """Reject stage options for clients without raw request-body support."""
+        uses_anthropic_api = self.provider == AIProvider.ANTHROPIC or (
+            self.provider == AIProvider.MINIMAX
+            and (self.base_url or "").rstrip("/").endswith("/anthropic")
+        )
+        if self.stage_options and (
+            uses_anthropic_api or self.provider == AIProvider.GEMINI
+        ):
+            raise ValueError(
+                "ai.stage_options is only supported by OpenAI-compatible providers"
+            )
+        return self
 
 
 class GitHubSourceConfig(BaseModel):

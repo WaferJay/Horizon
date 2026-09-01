@@ -8,7 +8,7 @@ import pytest
 import src.ai.analyzer as analyzer_module
 from src.ai.analyzer import ContentAnalyzer
 from src.ai.prompting.analysis import analysis_system_prompt
-from src.models import ContentArtifact, ContentItem, SourceType
+from src.models import AIStage, ContentArtifact, ContentItem, SourceType
 from src.processing import ProfileRegistry
 
 
@@ -195,6 +195,7 @@ def test_analyze_item_repairs_invalid_result_once():
 
     assert len(requests) == 2
     assert requests[1]["temperature"] == 0
+    assert all(request["stage"] == AIStage.ANALYSIS for request in requests)
     assert item.processing is not None
     assert item.processing.analysis is not None
     assert item.processing.analysis.score == 8

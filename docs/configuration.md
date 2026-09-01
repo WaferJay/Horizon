@@ -277,6 +277,56 @@ For remote Ollama servers, set `ai.base_url` in the active config file or set
 also recognized. If the value omits `/v1`, Horizon appends it automatically
 for Ollama's OpenAI-compatible endpoint.
 
+### Stage-specific provider options
+
+OpenAI-compatible services can expose generation settings that are not part of
+the common Horizon configuration. Use `ai.stage_options` to pass those fields
+only for a specific AI pipeline stage. For example, a llama.cpp server can tune
+repetition handling for topic deduplication without changing analysis or
+enrichment requests:
+
+```json
+{
+  "ai": {
+    "provider": "openai",
+    "model": "local-model",
+    "api_key_env": "OPENAI_API_KEY",
+    "base_url": "http://localhost:8080/v1",
+    "stage_options": {
+      "topic_dedup": {
+        "extra_body": {
+          "repeat_penalty": 1.08,
+          "repeat_last_n": 512
+        }
+      }
+    }
+  }
+}
+```
+
+Horizon recognizes these stage names:
+
+| Stage | Requests affected |
+| --- | --- |
+| `classification` | Automatic processing-profile selection |
+| `analysis` | Item scoring and analysis, including repair attempts |
+| `topic_dedup` | Semantic topic deduplication |
+| `enrichment` | Enrichment planning and artifact generation |
+| `secondary_brief` | Secondary-brief localization and repair attempts |
+
+- `extra_body` accepts provider-specific JSON fields and has no built-in field
+  defaults. If a stage or `stage_options` is omitted, its request is unchanged.
+- Confirm supported field names and values with the configured service. Horizon
+  does not translate extension fields between providers.
+- `model`, `messages`, `temperature`, `max_tokens`, `max_completion_tokens`, and
+  `response_format` remain managed by Horizon and cannot be overridden through
+  `extra_body`.
+- Stage options currently require an OpenAI-compatible provider. Native
+  Anthropic and Gemini clients, and MiniMax's Anthropic-compatible endpoint,
+  reject this configuration instead of silently ignoring it.
+- With `provider_chain`, stage options are attached only to the chain entry that
+  matches `ai.provider`. Other chain entries do not inherit the extension body.
+
 ### AI request timeouts
 
 Horizon supports separate HTTP timeout phases in seconds:

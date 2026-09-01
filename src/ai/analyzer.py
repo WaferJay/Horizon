@@ -14,7 +14,7 @@ from .client import AIClient
 from .classifier import ContentClassifier
 from .prompting.analysis import analysis_system_prompt, analysis_user_prompt
 from .utils import parse_json_response
-from ..models import ContentAnalysis, ContentItem
+from ..models import AIStage, ContentAnalysis, ContentItem
 from ..debug.context import debug_scope
 from ..processing.content import select_content, split_content
 from ..processing.profiles import ProfileRegistry
@@ -162,6 +162,7 @@ class ContentAnalyzer:
         response = await self.client.complete(
             system=analysis_system_prompt(profile),
             user=user_prompt,
+            stage=AIStage.ANALYSIS,
         )
 
         result, failure = self._validate_analysis_response(response)
@@ -175,6 +176,7 @@ class ContentAnalyzer:
                         f"({failure}). Analyze the item again and return only the required JSON object."
                     ),
                     temperature=0,
+                    stage=AIStage.ANALYSIS,
                 )
             result, failure = self._validate_analysis_response(repair_response)
 

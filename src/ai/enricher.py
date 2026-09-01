@@ -29,7 +29,13 @@ from .prompting.enrichment import (
     tool_results_text,
 )
 from .utils import parse_json_response_with_error
-from ..models import ArtifactSource, ContentArtifact, ContentBlock, ContentItem
+from ..models import (
+    AIStage,
+    ArtifactSource,
+    ContentArtifact,
+    ContentBlock,
+    ContentItem,
+)
 from ..debug.context import debug_scope
 from ..processing.profiles import LoadedProfile, ProfileBlock, ProfileRegistry
 from ..processing.tools import ToolInputError, ToolRegistry, ToolResult
@@ -155,6 +161,7 @@ class ContentEnricher:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10), reraise=True)
     async def _complete(self, **kwargs: Any) -> str:
+        kwargs.setdefault("stage", AIStage.ENRICHMENT)
         return await self.client.complete(**kwargs)
 
     @staticmethod

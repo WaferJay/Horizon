@@ -8,6 +8,7 @@ from typing import Any, Optional
 import httpx
 
 from ..ai.client import AIClient
+from ..models import AIStage
 from ..extractors.base import BaseExtractor
 from .context import current_debug_context, debug_scope
 from .store import DebugStore
@@ -52,6 +53,8 @@ class RecordingAIClient(AIClient):
         user: str,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        *,
+        stage: Optional[AIStage] = None,
     ) -> str:
         started = time.perf_counter()
         try:
@@ -60,6 +63,7 @@ class RecordingAIClient(AIClient):
                 user=user,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                stage=stage,
             )
         except Exception as exc:
             self.store.record_ai_call(

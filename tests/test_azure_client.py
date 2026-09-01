@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.ai.client import AzureOpenAIClient, create_ai_client
-from src.models import AIConfig, AIProvider
+from src.models import AIConfig, AIProvider, AIStage
 
 
 def _make_config(**overrides) -> AIConfig:
@@ -59,6 +59,33 @@ class TestAzureOpenAIClientInit:
 
 
 class TestAzureOpenAIClientComplete:
+    def test_sends_stage_extra_body(self, monkeypatch):
+        monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+        monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
+        client = AzureOpenAIClient(
+            _make_config(
+                stage_options={
+                    "analysis": {"extra_body": {"custom_sampler": 0.25}}
+                }
+            )
+        )
+
+        with patch.object(
+            client.client.chat.completions, "create", new_callable=AsyncMock
+        ) as mock_create:
+            mock_create.return_value = _mock_response()
+            asyncio.run(
+                client.complete(
+                    system="test",
+                    user="hello",
+                    stage=AIStage.ANALYSIS,
+                )
+            )
+
+        assert mock_create.call_args.kwargs["extra_body"] == {
+            "custom_sampler": 0.25
+        }
+
     def test_uses_max_completion_tokens_for_gpt5_prefix(self, monkeypatch):
         monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
         monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com")
